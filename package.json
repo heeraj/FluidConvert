@@ -1,0 +1,65 @@
+{
+  "name": "fluidconvert",
+  "productName": "FluidConvert",
+  "version": "0.1.0",
+  "description": "Compact, minimal Windows video converter - convert, compress, and trim locally.",
+  "main": "main.js",
+  "author": "GTR / heeraj",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.heeraj.fluidconvert",
+    "productName": "FluidConvert",
+    "copyright": "Copyright (c) 2026 GTR / heeraj",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**",
+      "**/node_modules/ffprobe-static/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FluidConvert",
+      "artifactName": "FluidConvert-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "FluidConvert-Portable-${version}.${ext}"
+    }
+  }
+}

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FluidConvert</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>
+          <h1>FluidConvert</h1>
+          <p class="subtitle">Convert · Compress · Trim — locally</p>
+        </div>
+      </div>
+      <span class="badge">v0.1.0 Early</span>
+    </header>
+
+    <section id="dropzone" class="card dropzone" tabindex="0">
+      <div id="drop-empty" class="drop-empty">
+        <div class="drop-icon">↓</div>
+        <p class="drop-title">Drop a video here</p>
+        <p class="drop-hint">or <button type="button" id="btn-browse" class="link-btn">browse</button></p>
+      </div>
+      <div id="drop-file" class="drop-file hidden">
+        <div class="file-meta">
+          <div class="file-name" id="file-name">—</div>
+          <div class="file-stats">
+            <span id="file-duration">—</span>
+            <span class="dot">·</span>
+            <span id="file-size">—</span>
+            <span class="dot">·</span>
+            <span id="file-res">—</span>
+          </div>
+        </div>
+        <button type="button" id="btn-clear" class="ghost-btn" title="Clear">✕</button>
+      </div>
+    </section>
+
+    <section class="card options">
+      <div class="option-row">
+        <label class="opt-label">Format</label>
+        <div class="chip-row" id="format-chips" role="group" aria-label="Output format">
+          <button type="button" class="chip active" data-format="mp4">MP4</button>
+          <button type="button" class="chip" data-format="mov">MOV</button>
+          <button type="button" class="chip" data-format="mkv">MKV</button>
+          <button type="button" class="chip" data-format="webm">WebM</button>
+          <button type="button" class="chip" data-format="avi">AVI</button>
+          <button type="button" class="chip" data-format="gif">GIF</button>
+        </div>
+      </div>
+
+      <div class="option-row">
+        <label class="opt-label">Compress</label>
+        <div class="chip-row" id="compress-chips" role="group" aria-label="Compress level">
+          <button type="button" class="chip" data-compress="original">Original</button>
+          <button type="button" class="chip" data-compress="high">High</button>
+          <button type="button" class="chip active" data-compress="balanced">Balanced</button>
+          <button type="button" class="chip" data-compress="small">Small</button>
+          <button type="button" class="chip" data-compress="tiny">Tiny</button>
+        </div>
+      </div>
+
+      <div class="option-row trim-row">
+        <label class="opt-label">Trim</label>
+        <div class="trim-fields">
+          <div class="field">
+            <span class="field-label">Start</span>
+            <input id="trim-start" type="text" placeholder="0:00" spellcheck="false" />
+          </div>
+          <div class="field">
+            <span class="field-label">End</span>
+            <input id="trim-end" type="text" placeholder="end" spellcheck="false" />
+          </div>
+          <p class="field-hint">hh:mm:ss or seconds</p>
+        </div>
+      </div>
+
+      <div class="option-row out-row">
+        <label class="opt-label">Output</label>
+        <div class="out-fields">
+          <input id="output-dir" type="text" readonly placeholder="Same as source" />
+          <button type="button" id="btn-out-dir" class="ghost-btn">Folder…</button>
+        </div>
+      </div>
+
+      <div class="estimate-bar">
+        <span class="estimate-label">Estimated output</span>
+        <span id="est-size" class="estimate-value">Est. —</span>
+      </div>
+    </section>
+
+    <section class="actions">
+      <button type="button" id="btn-convert" class="primary-btn" disabled>Convert</button>
+      <button type="button" id="btn-cancel" class="danger-btn hidden">Cancel</button>
+      <button type="button" id="btn-open-out" class="ghost-btn hidden">Open folder</button>
+    </section>
+
+    <section class="card progress-card">
+      <div class="progress-head">
+        <span id="progress-status">Ready</span>
+        <span id="progress-pct"></span>
+      </div>
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-bar"></div>
+      </div>
+      <pre id="log" class="log" aria-live="polite"></pre>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
