@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0] — 2026-09-24 — Themes, Settings & Media Options
+
+### Added
+
+- Mac-style blended titlebar with Windows `titleBarOverlay` (drag region, no hard chrome strip)
+- Light / Dark / System themes with CSS variables
+- Settings slide-over: theme, default output folder, default format, default compress (JSON in userData)
+- Resolution chips: Original / 1080p / 720p / 480p / Custom (scale filter, clamp to source width)
+- FPS chips: Original / 60 / 30 / 24
+- Audio chips for video modes: Keep / Strip / AAC 128k / AAC 96k
+- Audio extract formats: MP3, M4A, WAV, FLAC (hides video-only controls when active)
+- Size estimate reacts to resolution, fps, and audio-extract
+- Tagline: Convert · Compress · Trim · Extract
+
+### Notes
+
+- Still early / unstable — expect bugs
+- Size estimate remains a heuristic
+
 ## [0.1.0] — 2026-09-24 — Early Build
 
 First public early build of FluidConvert for Windows.

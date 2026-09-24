@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('fluid', {
   probe: (filePath) => ipcRenderer.invoke('media:probe', filePath),
   convert: (options) => ipcRenderer.invoke('job:convert', options),
   cancel: () => ipcRenderer.invoke('job:cancel'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setSettings: (partial) => ipcRenderer.invoke('settings:set', partial),
+  resolveTheme: () => ipcRenderer.invoke('theme:resolve'),
   onProgress: (cb) => {
     const handler = (_e, data) => cb(data);
     ipcRenderer.on('job:progress', handler);
@@ -18,5 +21,10 @@ contextBridge.exposeInMainWorld('fluid', {
     const handler = (_e, data) => cb(data);
     ipcRenderer.on('job:log', handler);
     return () => ipcRenderer.removeListener('job:log', handler);
+  },
+  onThemeChanged: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('theme:changed', handler);
+    return () => ipcRenderer.removeListener('theme:changed', handler);
   },
 });

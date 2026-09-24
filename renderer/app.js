@@ -1,17 +1,22 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
+  const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'flac']);
+
   const state = {
-    file: null, // probe result
+    file: null,
     format: 'mp4',
     compress: 'balanced',
+    resolution: 'original',
+    customWidth: '',
+    fps: 'original',
+    audio: 'keep',
     outputDir: null,
     lastOutputPath: null,
     running: false,
+    settings: null,
   };
 
-  // Rough size multipliers vs source size (before trim ratio).
-  // Tuned for typical H.264/AAC sources — estimates only.
   const COMPRESS_FACTOR = {
     original: 1.0,
     high: 0.85,
@@ -26,8 +31,27 @@
     mkv: 0.98,
     webm: 0.75,
     avi: 1.15,
-    gif: 1.8, // can balloon; capped later relative to duration
+    gif: 1.8,
   };
+
+  const RES_FACTOR = {
+    original: 1.0,
+    '1080p': 1.0,
+    '720p': 0.55,
+    '480p': 0.28,
+    custom: 0.7,
+  };
+
+  const FPS_FACTOR = {
+    original: 1.0,
+    '60': 1.15,
+    '30': 0.85,
+    '24': 0.72,
+  };
+
+  function isExtract() {
+    return AUDIO_FORMATS.has(state.format);
+  }
 
   function parseTimeToSeconds(value) {
     if (value === null || value === undefined) return null;
@@ -66,28 +90,64 @@
     return Math.min(1, len / dur);
   }
 
+  function resolutionFactor() {
+    if (state.resolution === 'custom') {
+      const w = parseInt(state.customWidth || $('custom-width').value, 10);
+      const srcW = state.file?.width;
+      if (w > 0 && srcW > 0) {
+        const clamped = Math.min(w, srcW);
+        return Math.max(0.05, (clamped / srcW) ** 2);
+      }
+      return RES_FACTOR.custom;
+    }
+    if (state.resolution !== 'original' && state.file?.width) {
+      const targets = { '1080p': 1920, '720p': 1280, '480p': 854 };
+      const tw = targets[state.resolution];
+      if (tw) {
+        const clamped = Math.min(tw, state.file.width);
+        return Math.max(0.05, (clamped / state.file.width) ** 2);
+      }
+    }
+    return RES_FACTOR[state.resolution] || 1;
+  }
+
   function estimateOutputBytes() {
     if (!state.file) return null;
     const src = state.file.size || 0;
     if (!src) return null;
+    const ratio = trimRatio();
+    const dur = (state.file.duration || 10) * ratio;
 
-    let factor = (COMPRESS_FACTOR[state.compress] || 0.55) * (FORMAT_FACTOR[state.format] || 1);
-    // GIF: base on duration more than source codec size
+    if (isExtract()) {
+      const rates = { mp3: 24, m4a: 24, aac: 24, wav: 176, flac: 90 }; // KB/s rough
+      const kbps = rates[state.format] || 24;
+      return Math.max(16 * 1024, dur * kbps * 1024);
+    }
+
     if (state.format === 'gif') {
-      const dur = (state.file.duration || 10) * trimRatio();
-      // ~180 KB/s rough for 480p 12fps gif
-      const gifEst = dur * 180 * 1024;
+      const scale = resolutionFactor();
+      const fpsMul = state.fps === 'original' ? 1 : (parseInt(state.fps, 10) || 12) / 12;
+      const gifEst = dur * 180 * 1024 * scale * Math.min(2, fpsMul);
       return Math.max(50 * 1024, gifEst);
     }
 
-    // Original + same-ish container ≈ remux, near source * trim
+    let factor = (COMPRESS_FACTOR[state.compress] || 0.55) * (FORMAT_FACTOR[state.format] || 1);
+    factor *= resolutionFactor();
+    factor *= FPS_FACTOR[state.fps] || 1;
+
+    if (state.audio === 'strip') factor *= 0.88;
+    else if (state.audio === 'aac96') factor *= 0.95;
+    else if (state.audio === 'aac128') factor *= 0.97;
+
     if (state.compress === 'original') {
-      factor = 1.0 * (FORMAT_FACTOR[state.format] || 1);
-      if (state.format === 'webm') factor = 0.9; // copy rarely possible → slight reencode guess
+      factor = 1.0 * (FORMAT_FACTOR[state.format] || 1) * resolutionFactor() * (FPS_FACTOR[state.fps] || 1);
+      if (state.format === 'webm') factor *= 0.9;
+      if (state.resolution !== 'original' || state.fps !== 'original') {
+        factor *= 0.85; // re-encode
+      }
     }
 
-    const est = src * factor * trimRatio();
-    return Math.max(32 * 1024, est);
+    return Math.max(32 * 1024, src * factor * ratio);
   }
 
   function updateEstimate() {
@@ -102,9 +162,28 @@
 
   function setChips(containerId, attr, value) {
     const root = $(containerId);
+    if (!root) return;
     root.querySelectorAll('.chip').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset[attr] === value);
     });
+  }
+
+  function updateModeUI() {
+    const extract = isExtract();
+    document.querySelectorAll('.video-only').forEach((el) => {
+      el.classList.toggle('hidden', extract);
+    });
+    // GIF: hide audio row (already video-only); resolution/fps still useful
+    if (!extract && state.format === 'gif') {
+      $('row-audio')?.classList.add('hidden');
+      $('row-compress')?.classList.remove('hidden');
+    }
+    $('custom-width-wrap').classList.toggle('hidden', extract || state.resolution !== 'custom');
+    $('btn-convert').textContent = extract ? 'Extract' : 'Convert';
+  }
+
+  function applyTheme(resolved) {
+    document.documentElement.setAttribute('data-theme', resolved === 'light' ? 'light' : 'dark');
   }
 
   function setRunning(running) {
@@ -122,10 +201,9 @@
     $('file-name').textContent = probe.name;
     $('file-duration').textContent = probe.durationLabel || '—';
     $('file-size').textContent = probe.sizeLabel || '—';
-    const res = probe.width && probe.height ? `${probe.width}×${probe.height}` : '—';
+    const res = probe.width && probe.height ? `${probe.width}×${probe.height}` : (probe.hasAudio && !probe.hasVideo ? 'audio' : '—');
     $('file-res').textContent = res;
     if (!state.outputDir) {
-      // default: same folder as source (shown as placeholder); leave input empty meaning "same as source"
       $('output-dir').value = '';
       $('output-dir').placeholder = 'Same as source';
     }
@@ -182,13 +260,45 @@
     }
   }
 
+  async function persistLastUsed() {
+    if (!state.settings?.rememberLastUsed) return;
+    try {
+      await window.fluid.setSettings({
+        lastFormat: state.format,
+        lastCompress: state.compress,
+        lastResolution: state.resolution,
+        lastFps: state.fps,
+        lastAudio: state.audio,
+      });
+    } catch (_) { /* ignore */ }
+  }
+
+  function openSettings() {
+    const s = state.settings || {};
+    setChips('theme-chips', 'theme', s.theme || 'dark');
+    $('settings-out-dir').value = s.defaultOutputFolder || '';
+    $('settings-out-dir').placeholder = 'Same as source';
+    $('settings-format').value = s.defaultFormat || 'mp4';
+    $('settings-compress').value = s.defaultCompress || 'balanced';
+    $('settings-remember').checked = s.rememberLastUsed !== false;
+    $('settings-backdrop').classList.remove('hidden');
+    $('settings-panel').classList.remove('hidden');
+  }
+
+  function closeSettings() {
+    $('settings-backdrop').classList.add('hidden');
+    $('settings-panel').classList.add('hidden');
+  }
+
   // —— Chip handlers ——
   $('format-chips').addEventListener('click', (e) => {
     const btn = e.target.closest('.chip');
     if (!btn) return;
     state.format = btn.dataset.format;
     setChips('format-chips', 'format', state.format);
+    updateModeUI();
     updateEstimate();
+    persistLastUsed();
   });
 
   $('compress-chips').addEventListener('click', (e) => {
@@ -197,6 +307,40 @@
     state.compress = btn.dataset.compress;
     setChips('compress-chips', 'compress', state.compress);
     updateEstimate();
+    persistLastUsed();
+  });
+
+  $('resolution-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    state.resolution = btn.dataset.resolution;
+    setChips('resolution-chips', 'resolution', state.resolution);
+    updateModeUI();
+    updateEstimate();
+    persistLastUsed();
+  });
+
+  $('custom-width').addEventListener('input', () => {
+    state.customWidth = $('custom-width').value.trim();
+    updateEstimate();
+  });
+
+  $('fps-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    state.fps = btn.dataset.fps;
+    setChips('fps-chips', 'fps', state.fps);
+    updateEstimate();
+    persistLastUsed();
+  });
+
+  $('audio-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    state.audio = btn.dataset.audio;
+    setChips('audio-chips', 'audio', state.audio);
+    updateEstimate();
+    persistLastUsed();
   });
 
   ['trim-start', 'trim-end'].forEach((id) => {
@@ -256,13 +400,68 @@
     }
   });
 
+  $('btn-out-clear').addEventListener('click', () => {
+    state.outputDir = null;
+    $('output-dir').value = '';
+    $('output-dir').placeholder = 'Same as source';
+  });
+
+  // —— Settings ——
+  $('btn-settings').addEventListener('click', openSettings);
+  $('btn-settings-close').addEventListener('click', closeSettings);
+  $('settings-backdrop').addEventListener('click', closeSettings);
+
+  $('theme-chips').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    const theme = btn.dataset.theme;
+    setChips('theme-chips', 'theme', theme);
+    const next = await window.fluid.setSettings({ theme });
+    state.settings = next;
+    const resolved = await window.fluid.resolveTheme();
+    applyTheme(resolved.resolved);
+  });
+
+  $('btn-settings-out').addEventListener('click', async () => {
+    const desktop = await window.fluid.getDesktop();
+    const chosen = await window.fluid.chooseOutputDir(state.settings?.defaultOutputFolder || desktop);
+    if (chosen) {
+      $('settings-out-dir').value = chosen;
+      state.settings = await window.fluid.setSettings({ defaultOutputFolder: chosen });
+      if (!state.outputDir) {
+        state.outputDir = chosen;
+        $('output-dir').value = chosen;
+      }
+    }
+  });
+
+  $('btn-settings-out-clear').addEventListener('click', async () => {
+    $('settings-out-dir').value = '';
+    state.settings = await window.fluid.setSettings({ defaultOutputFolder: null });
+  });
+
+  $('settings-format').addEventListener('change', async () => {
+    state.settings = await window.fluid.setSettings({ defaultFormat: $('settings-format').value });
+  });
+
+  $('settings-compress').addEventListener('change', async () => {
+    state.settings = await window.fluid.setSettings({ defaultCompress: $('settings-compress').value });
+  });
+
+  $('settings-remember').addEventListener('change', async () => {
+    state.settings = await window.fluid.setSettings({ rememberLastUsed: $('settings-remember').checked });
+  });
+
   // —— Convert / cancel ——
   $('btn-convert').addEventListener('click', async () => {
     if (!state.file || state.running) return;
     setRunning(true);
     $('btn-open-out').classList.add('hidden');
     setProgress({ percent: 0, indeterminate: true, status: 'Starting…' });
-    appendLog(`Convert → ${state.format.toUpperCase()} / ${state.compress}`);
+    const label = isExtract()
+      ? `Extract → ${state.format.toUpperCase()}`
+      : `Convert → ${state.format.toUpperCase()} / ${state.compress} / ${state.resolution} / ${state.fps}fps / ${state.audio}`;
+    appendLog(label);
 
     try {
       const result = await window.fluid.convert({
@@ -273,6 +472,11 @@
         trimStart: $('trim-start').value.trim(),
         trimEnd: $('trim-end').value.trim(),
         duration: state.file.duration,
+        resolution: state.resolution,
+        customWidth: state.customWidth || $('custom-width').value.trim(),
+        fps: state.fps,
+        audio: state.audio,
+        sourceWidth: state.file.width || null,
       });
 
       if (result.cancelled) {
@@ -284,6 +488,7 @@
         setProgress({ percent: 100, indeterminate: false, status: 'Done' });
         $('btn-open-out').classList.remove('hidden');
       }
+      await persistLastUsed();
     } catch (err) {
       appendLog(`Error: ${err.message || err}`);
       setProgress({ percent: 0, indeterminate: false, status: 'Failed' });
@@ -309,6 +514,50 @@
   window.fluid.onLog((data) => {
     if (data?.line) appendLog(data.line);
   });
+  window.fluid.onThemeChanged((data) => {
+    if (data?.resolved) applyTheme(data.resolved);
+  });
 
-  updateEstimate();
+  async function init() {
+    try {
+      const settings = await window.fluid.getSettings();
+      state.settings = settings;
+
+      const themeInfo = await window.fluid.resolveTheme();
+      applyTheme(themeInfo.resolved);
+
+      const remember = settings.rememberLastUsed !== false;
+      const format = (remember && settings.lastFormat) || settings.defaultFormat || 'mp4';
+      const compress = (remember && settings.lastCompress) || settings.defaultCompress || 'balanced';
+      const resolution = (remember && settings.lastResolution) || 'original';
+      const fps = (remember && settings.lastFps) || 'original';
+      const audio = (remember && settings.lastAudio) || 'keep';
+
+      state.format = format;
+      state.compress = compress;
+      state.resolution = resolution;
+      state.fps = fps;
+      state.audio = audio;
+
+      setChips('format-chips', 'format', state.format);
+      setChips('compress-chips', 'compress', state.compress);
+      setChips('resolution-chips', 'resolution', state.resolution);
+      setChips('fps-chips', 'fps', state.fps);
+      setChips('audio-chips', 'audio', state.audio);
+
+      if (settings.defaultOutputFolder) {
+        state.outputDir = settings.defaultOutputFolder;
+        $('output-dir').value = settings.defaultOutputFolder;
+      }
+
+      updateModeUI();
+    } catch (err) {
+      appendLog(`Settings load: ${err.message || err}`);
+      applyTheme('dark');
+      updateModeUI();
+    }
+    updateEstimate();
+  }
+
+  init();
 })();

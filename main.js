@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -6,8 +6,67 @@ const { spawn } = require('child_process');
 let mainWindow = null;
 let currentJob = null; // { proc, cancelled }
 
+const DEFAULT_SETTINGS = {
+  theme: 'dark',
+  defaultOutputFolder: null,
+  defaultFormat: 'mp4',
+  defaultCompress: 'balanced',
+  rememberLastUsed: true,
+  lastFormat: null,
+  lastCompress: null,
+  lastResolution: 'original',
+  lastFps: 'original',
+  lastAudio: 'keep',
+};
+
+function settingsPath() {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+function loadSettings() {
+  try {
+    const p = settingsPath();
+    if (!fs.existsSync(p)) return { ...DEFAULT_SETTINGS };
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return { ...DEFAULT_SETTINGS, ...raw };
+  } catch (_) {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(partial) {
+  const next = { ...loadSettings(), ...partial };
+  const p = settingsPath();
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
+  } catch (_) { /* ignore */ }
+  return next;
+}
+
+function resolveTheme(theme) {
+  const t = theme || 'dark';
+  if (t === 'system') {
+    return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  }
+  return t === 'light' ? 'light' : 'dark';
+}
+
+function overlayColors(resolved) {
+  if (resolved === 'light') {
+    return { color: '#f4f5f7', symbolColor: '#1a1d24' };
+  }
+  return { color: '#0f1115', symbolColor: '#e8eaed' };
+}
+
+function applyNativeTheme(theme) {
+  const t = theme || 'dark';
+  if (t === 'system') nativeTheme.themeSource = 'system';
+  else if (t === 'light') nativeTheme.themeSource = 'light';
+  else nativeTheme.themeSource = 'dark';
+}
+
 function resolveBinary(pkgName) {
-  // Prefer packaged unpacked path; fall back to require() for dev.
   try {
     let binPath;
     if (pkgName === 'ffmpeg') {
@@ -22,7 +81,6 @@ function resolveBinary(pkgName) {
     if (binPath && fs.existsSync(binPath)) return binPath;
   } catch (_) { /* continue */ }
 
-  // Fallback: look under resources/app.asar.unpacked
   const base = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
     : path.join(__dirname, 'node_modules');
@@ -44,15 +102,25 @@ function resolveBinary(pkgName) {
 }
 
 function createWindow() {
+  const settings = loadSettings();
+  applyNativeTheme(settings.theme);
+  const resolved = resolveTheme(settings.theme);
+  const overlay = overlayColors(resolved);
+
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 640,
-    minWidth: 780,
-    minHeight: 560,
-    backgroundColor: '#0f1115',
+    width: 920,
+    height: 700,
+    minWidth: 800,
+    minHeight: 600,
+    backgroundColor: overlay.color,
     title: 'FluidConvert',
     frame: true,
-    titleBarStyle: 'default',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: overlay.color,
+      symbolColor: overlay.symbolColor,
+      height: 36,
+    },
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -74,6 +142,24 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+
+nativeTheme.on('updated', () => {
+  const settings = loadSettings();
+  if (settings.theme !== 'system') return;
+  const resolved = resolveTheme('system');
+  const overlay = overlayColors(resolved);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.setTitleBarOverlay({
+        color: overlay.color,
+        symbolColor: overlay.symbolColor,
+        height: 36,
+      });
+      mainWindow.setBackgroundColor(overlay.color);
+    } catch (_) { /* ignore */ }
+    send('theme:changed', { resolved });
+  }
 });
 
 function send(channel, payload) {
@@ -115,12 +201,20 @@ function formatDuration(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+const AUDIO_EXTRACT_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'flac']);
+
+function isAudioExtract(format) {
+  return AUDIO_EXTRACT_FORMATS.has((format || '').toLowerCase());
+}
+
 ipcMain.handle('dialog:openVideo', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select a video',
+    title: 'Select a media file',
     properties: ['openFile'],
     filters: [
+      { name: 'Media', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'gif', 'm4v', 'wmv', 'flv', 'ts', 'mts', 'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'wma'] },
       { name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'gif', 'm4v', 'wmv', 'flv', 'ts', 'mts'] },
+      { name: 'Audio', extensions: ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'wma'] },
       { name: 'All files', extensions: ['*'] },
     ],
   });
@@ -149,6 +243,34 @@ ipcMain.handle('shell:showItem', async (_e, targetPath) => {
 });
 
 ipcMain.handle('fs:getDesktop', () => app.getPath('desktop'));
+
+ipcMain.handle('settings:get', () => loadSettings());
+
+ipcMain.handle('settings:set', (_e, partial) => {
+  const next = saveSettings(partial || {});
+  if (partial && Object.prototype.hasOwnProperty.call(partial, 'theme')) {
+    applyNativeTheme(next.theme);
+    const resolved = resolveTheme(next.theme);
+    const overlay = overlayColors(resolved);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        mainWindow.setTitleBarOverlay({
+          color: overlay.color,
+          symbolColor: overlay.symbolColor,
+          height: 36,
+        });
+        mainWindow.setBackgroundColor(overlay.color);
+      } catch (_) { /* ignore */ }
+    }
+    send('theme:changed', { resolved, theme: next.theme });
+  }
+  return next;
+});
+
+ipcMain.handle('theme:resolve', () => {
+  const settings = loadSettings();
+  return { theme: settings.theme, resolved: resolveTheme(settings.theme) };
+});
 
 ipcMain.handle('media:probe', async (_e, filePath) => {
   if (!filePath || !fs.existsSync(filePath)) {
@@ -183,6 +305,11 @@ ipcMain.handle('media:probe', async (_e, filePath) => {
         const duration = parseFloat(data.format?.duration || 0);
         const videoStream = (data.streams || []).find((s) => s.codec_type === 'video');
         const audioStream = (data.streams || []).find((s) => s.codec_type === 'audio');
+        let fps = null;
+        if (videoStream?.r_frame_rate && videoStream.r_frame_rate.includes('/')) {
+          const [a, b] = videoStream.r_frame_rate.split('/').map(Number);
+          if (b) fps = a / b;
+        }
         resolve({
           path: filePath,
           name: path.basename(filePath),
@@ -192,6 +319,8 @@ ipcMain.handle('media:probe', async (_e, filePath) => {
           durationLabel: formatDuration(duration),
           width: videoStream?.width || null,
           height: videoStream?.height || null,
+          fps,
+          hasVideo: Boolean(videoStream),
           hasAudio: Boolean(audioStream),
           format: data.format?.format_name || null,
         });
@@ -202,11 +331,6 @@ ipcMain.handle('media:probe', async (_e, filePath) => {
   });
 });
 
-/**
- * Compress presets → ffmpeg settings.
- * original: remux/copy when possible, else light re-encode
- * high / balanced / small / tiny: CRF + optional scale
- */
 const COMPRESS_PRESETS = {
   original: { crf: null, copy: true, label: 'Original' },
   high: { crf: 18, videoBitrate: null, label: 'High' },
@@ -214,6 +338,80 @@ const COMPRESS_PRESETS = {
   small: { crf: 28, videoBitrate: null, label: 'Small' },
   tiny: { crf: 32, videoBitrate: '800k', scale: 'iw*0.5:ih*0.5', label: 'Tiny' },
 };
+
+const RES_WIDTH = {
+  '1080p': 1920,
+  '720p': 1280,
+  '480p': 854,
+};
+
+function resolveTargetWidth(resolution, customWidth, sourceWidth) {
+  const res = (resolution || 'original').toLowerCase();
+  if (res === 'original') return null;
+  let w = null;
+  if (res === 'custom') {
+    const n = parseInt(customWidth, 10);
+    if (Number.isFinite(n) && n > 0) w = n;
+  } else if (RES_WIDTH[res]) {
+    w = RES_WIDTH[res];
+  }
+  if (w == null) return null;
+  if (sourceWidth && Number.isFinite(sourceWidth) && sourceWidth > 0) {
+    w = Math.min(w, sourceWidth);
+  }
+  // even width for yuv420
+  if (w % 2 !== 0) w -= 1;
+  if (w < 2) return null;
+  return w;
+}
+
+function buildVideoFilters(opts, preset) {
+  const filters = [];
+  const targetW = resolveTargetWidth(opts.resolution, opts.customWidth, opts.sourceWidth);
+  const fpsVal = opts.fps && opts.fps !== 'original' ? parseInt(opts.fps, 10) : null;
+
+  if (opts.format === 'gif') {
+    filters.push(fpsVal ? `fps=${fpsVal}` : 'fps=12');
+    if (targetW) filters.push(`scale=${targetW}:-2:flags=lanczos`);
+    else if (preset.scale) filters.push(`scale=${preset.scale}:flags=lanczos`);
+    else filters.push('scale=480:-2:flags=lanczos');
+    return filters;
+  }
+
+  if (targetW) {
+    filters.push(`scale=${targetW}:-2`);
+  } else if (preset.scale) {
+    filters.push(`scale=${preset.scale}`);
+  }
+
+  if (fpsVal && Number.isFinite(fpsVal) && fpsVal > 0) {
+    filters.push(`fps=${fpsVal}`);
+  }
+
+  return filters;
+}
+
+function applyAudioArgs(args, audioMode, fmt) {
+  const mode = (audioMode || 'keep').toLowerCase();
+  if (mode === 'strip') {
+    args.push('-an');
+    return;
+  }
+  if (mode === 'aac128') {
+    args.push('-c:a', 'aac', '-b:a', '128k');
+    return;
+  }
+  if (mode === 'aac96') {
+    args.push('-c:a', 'aac', '-b:a', '96k');
+    return;
+  }
+  // keep — set sensible defaults per container if we are re-encoding video
+  if (fmt === 'webm') {
+    args.push('-c:a', 'libopus', '-b:a', '128k');
+  } else {
+    args.push('-c:a', 'aac', '-b:a', '160k');
+  }
+}
 
 function buildFfmpegArgs(opts) {
   const {
@@ -228,64 +426,75 @@ function buildFfmpegArgs(opts) {
 
   const preset = COMPRESS_PRESETS[compress] || COMPRESS_PRESETS.balanced;
   const args = ['-y', '-hide_banner', '-progress', 'pipe:1', '-nostats'];
+  const fmt = (format || 'mp4').toLowerCase();
 
   const startSec = parseTimeToSeconds(trimStart);
   const endSec = parseTimeToSeconds(trimEnd);
 
-  // Input seeking for speed when trimming from start
   if (startSec !== null && startSec > 0) {
     args.push('-ss', String(startSec));
   }
   args.push('-i', inputPath);
 
   if (endSec !== null && endSec > 0) {
-    // -to is relative to input timeline when used after -i with -ss before -i
-    // Prefer -to as absolute end time on the input timeline
     args.push('-to', String(endSec));
   } else if (startSec !== null && startSec > 0 && duration) {
-    // no end — encode to EOF (ffmpeg default)
+    // encode to EOF
   }
 
-  const fmt = (format || 'mp4').toLowerCase();
+  // —— Audio extract ——
+  if (isAudioExtract(fmt)) {
+    args.push('-vn');
+    if (fmt === 'mp3') {
+      args.push('-c:a', 'libmp3lame', '-b:a', '192k');
+    } else if (fmt === 'm4a' || fmt === 'aac') {
+      args.push('-c:a', 'aac', '-b:a', '192k');
+    } else if (fmt === 'wav') {
+      args.push('-c:a', 'pcm_s16le');
+    } else if (fmt === 'flac') {
+      args.push('-c:a', 'flac');
+    }
+    args.push(outputPath);
+    return args;
+  }
+
+  const vf = buildVideoFilters({ ...opts, format: fmt }, preset);
+  const hasCustomVideo = Boolean(
+    (opts.resolution && opts.resolution !== 'original')
+    || (opts.fps && opts.fps !== 'original')
+    || vf.length
+  );
+  const audioMode = (opts.audio || 'keep').toLowerCase();
+  const canCopy = preset.copy
+    && compress === 'original'
+    && ['mp4', 'mov', 'mkv'].includes(fmt)
+    && !hasCustomVideo
+    && (audioMode === 'keep');
 
   if (fmt === 'gif') {
-    // Simple GIF: scale + palette-ish via fps + scale
-    const gifFilters = [];
-    if (startSec !== null || endSec !== null) {
-      // already trimmed via -ss/-to
-    }
-    gifFilters.push('fps=12');
-    if (preset.scale) gifFilters.push(`scale=${preset.scale}:flags=lanczos`);
-    else gifFilters.push('scale=480:-1:flags=lanczos');
-    args.push('-vf', gifFilters.join(','));
+    if (vf.length) args.push('-vf', vf.join(','));
     args.push('-loop', '0');
-  } else if (preset.copy && compress === 'original' && ['mp4', 'mov', 'mkv'].includes(fmt)) {
-    // Stream copy when staying in compatible containers
+    args.push('-an');
+  } else if (canCopy) {
     args.push('-c', 'copy');
   } else {
-    // Video encode
     if (fmt === 'webm') {
       args.push('-c:v', 'libvpx-vp9');
       if (preset.crf != null) args.push('-crf', String(preset.crf), '-b:v', '0');
-      if (preset.scale) args.push('-vf', `scale=${preset.scale}`);
-      args.push('-c:a', 'libopus', '-b:a', '128k');
     } else if (fmt === 'avi') {
       args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p');
       if (preset.crf != null) args.push('-crf', String(preset.crf));
       if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
-      if (preset.scale) args.push('-vf', `scale=${preset.scale}`);
-      args.push('-c:a', 'aac', '-b:a', '128k');
     } else {
-      // mp4 / mov / mkv
       args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium');
       if (preset.crf != null) args.push('-crf', String(preset.crf));
       if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
-      if (preset.scale) args.push('-vf', `scale=${preset.scale}`);
-      args.push('-c:a', 'aac', '-b:a', '160k');
       if (fmt === 'mp4' || fmt === 'mov') {
         args.push('-movflags', '+faststart');
       }
     }
+    if (vf.length) args.push('-vf', vf.join(','));
+    applyAudioArgs(args, audioMode, fmt);
   }
 
   args.push(outputPath);
@@ -298,7 +507,6 @@ ipcMain.handle('job:cancel', async () => {
     try {
       currentJob.proc.kill('SIGTERM');
     } catch (_) { /* ignore */ }
-    // On Windows, force kill tree if needed
     try {
       if (process.platform === 'win32' && currentJob.proc.pid) {
         spawn('taskkill', ['/pid', String(currentJob.proc.pid), '/T', '/F'], { windowsHide: true });
@@ -324,6 +532,11 @@ ipcMain.handle('job:convert', async (_e, options) => {
     trimStart,
     trimEnd,
     duration,
+    resolution,
+    customWidth,
+    fps,
+    audio,
+    sourceWidth,
   } = options;
 
   if (!inputPath || !fs.existsSync(inputPath)) {
@@ -336,11 +549,13 @@ ipcMain.handle('job:convert', async (_e, options) => {
   }
 
   const baseName = path.basename(inputPath, path.extname(inputPath));
-  const ext = (format || 'mp4').toLowerCase();
-  let outputPath = path.join(outDir, `${baseName}_converted.${ext}`);
+  let ext = (format || 'mp4').toLowerCase();
+  if (ext === 'aac') ext = 'm4a';
+  const suffix = isAudioExtract(ext) ? 'audio' : 'converted';
+  let outputPath = path.join(outDir, `${baseName}_${suffix}.${ext}`);
   let n = 1;
   while (fs.existsSync(outputPath)) {
-    outputPath = path.join(outDir, `${baseName}_converted_${n}.${ext}`);
+    outputPath = path.join(outDir, `${baseName}_${suffix}_${n}.${ext}`);
     n += 1;
   }
 
@@ -352,6 +567,11 @@ ipcMain.handle('job:convert', async (_e, options) => {
     trimStart,
     trimEnd,
     duration,
+    resolution: resolution || 'original',
+    customWidth,
+    fps: fps || 'original',
+    audio: audio || 'keep',
+    sourceWidth: sourceWidth || null,
   });
 
   const startSec = parseTimeToSeconds(trimStart) || 0;
@@ -370,7 +590,6 @@ ipcMain.handle('job:convert', async (_e, options) => {
     let stderrBuf = '';
 
     const onProgressLine = (line) => {
-      // -progress pipe:1 emits key=value lines, e.g. out_time_ms=1234567
       const m = /out_time_ms=(\d+)/.exec(line);
       if (m && totalDuration > 0) {
         const outSec = parseInt(m[1], 10) / 1e6;
@@ -404,7 +623,6 @@ ipcMain.handle('job:convert', async (_e, options) => {
     proc.stderr.on('data', (d) => {
       const text = d.toString();
       stderrBuf += text;
-      // Forward short status lines
       text.split(/\r?\n/).forEach((line) => {
         const trimmed = line.trim();
         if (trimmed && /time=|frame=|error|Error/i.test(trimmed)) {
@@ -424,7 +642,6 @@ ipcMain.handle('job:convert', async (_e, options) => {
       currentJob = null;
       if (wasCancelled) {
         send('job:progress', { percent: 0, indeterminate: false, status: 'Cancelled' });
-        // Best-effort remove partial output
         try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
         resolve({ cancelled: true, outputPath: null });
         return;

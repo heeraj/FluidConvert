@@ -1,20 +1,26 @@
 # FluidConvert
 
-Compact, minimal Windows video converter — **convert**, **compress**, and **trim** locally.
+Compact, minimal Windows video converter — **convert**, **compress**, **trim**, and **extract** locally.
 
-> **Early build (v0.1.0)** — functional but unstable. Expect rough edges. Feedback welcome.
+> **Early build (v0.2.0)** — functional but unstable. Expect rough edges. Feedback welcome.
 
 > **Screenshots:** placeholder — UI capture coming in a later release.
 
 ## Features
 
-- Drag-and-drop or browse to pick a video
+- Mac-style blended titlebar (Windows caption overlay) with settings gear
+- **Dark / Light / System** themes (persisted in local settings)
+- Drag-and-drop or browse to pick video (or audio) sources
 - Probe duration, size, and resolution (ffprobe)
-- Convert to **MP4, MOV, MKV, WebM, AVI, GIF** (audio kept when applicable)
+- Convert to **MP4, MOV, MKV, WebM, AVI, GIF**
+- **Audio extract:** MP3, M4A, WAV, FLAC (`-vn`)
 - Compress chips: **Original / High / Balanced / Small / Tiny**
-- Live **estimated output size** (approximate — updates with format, compress, trim)
-- Trim with start/end (`hh:mm:ss` or seconds)
-- Choose output folder (default: same as source)
+- **Resolution** chips (Original / 1080p / 720p / 480p / Custom) — no upscale above source
+- **FPS** chips (Original / 60 / 30 / 24)
+- **Audio** chips for video: Keep / Strip / AAC 128k / AAC 96k
+- Live **estimated output size** (approximate — reacts to format, compress, trim, resolution, fps, extract)
+- Trim with start/end (`hh:mm:ss` or seconds) — applies to extract too
+- Default output folder / format / compress via Settings
 - Progress + cancel + open output folder when done
 - **100% local** — no uploads, no accounts, no telemetry
 
@@ -39,8 +45,8 @@ npm run build
 
 Artifacts land in `dist/`:
 
-- `FluidConvert-Setup-0.1.0.exe` — NSIS installer
-- `FluidConvert-Portable-0.1.0.exe` — portable single EXE
+- `FluidConvert-Setup-0.2.0.exe` — NSIS installer
+- `FluidConvert-Portable-0.2.0.exe` — portable single EXE
 
 ffmpeg/ffprobe are bundled via `ffmpeg-static` / `ffprobe-static`.
 
