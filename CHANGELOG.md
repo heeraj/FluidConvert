@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.0] — 2026-09-25 — UI declutter, compress levels, bitrates
+
+### Added
+
+- Foldable option sections (accordion): Compress, Video, Audio, Trim, Output — open/closed remembered in settings
+- **Compress level** chips (higher = more compression / smaller file): Low · Balanced · High · Max · Original · Custom
+- **Custom video bitrate** input (`2500k` or Mbps) applied as `-b:v`, included in size estimate
+- **Audio extract bitrate** chips for MP3/M4A: 320 / 192 / 128 / 96 / 64 kbps (default 192); WAV/FLAC stay lossless
+- One-line job summary above Convert
+- Soft-collapse log after success (“Show log” toggle); done banner with output path
+- Enter key converts when ready (not while typing in an input)
+- Settings defaults for compress level + audio extract bitrate
+
+### Changed
+
+- Compress naming inverted for clarity (level = compression amount, not quality label)
+- Migrates saved `high`→`low`, `small`→`high`, `tiny`→`max` so old settings keep working
+- Badge → v0.3.0 Early; larger hit targets on fold headers and chips
+- Convert stays disabled until a file is loaded (and custom bitrate is valid when Custom is selected)
+
+### Notes
+
+- Still early / unstable — expect bugs
+- Trim timeline/preview scrubber still out of scope (start/end text fields only)
+
 ## [0.2.0] — 2026-09-24 — Themes, Settings & Media Options
 
 ### Added

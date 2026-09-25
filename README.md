@@ -2,7 +2,7 @@
 
 Compact, minimal Windows video converter — **convert**, **compress**, **trim**, and **extract** locally.
 
-> **Early build (v0.2.0)** — functional but unstable. Expect rough edges. Feedback welcome.
+> **Early build (v0.3.0)** — functional but unstable. Expect rough edges. Feedback welcome.
 
 > **Screenshots:** placeholder — UI capture coming in a later release.
 
@@ -13,14 +13,17 @@ Compact, minimal Windows video converter — **convert**, **compress**, **trim**
 - Drag-and-drop or browse to pick video (or audio) sources
 - Probe duration, size, and resolution (ffprobe)
 - Convert to **MP4, MOV, MKV, WebM, AVI, GIF**
-- **Audio extract:** MP3, M4A, WAV, FLAC (`-vn`)
-- Compress chips: **Original / High / Balanced / Small / Tiny**
+- **Audio extract:** MP3, M4A, WAV, FLAC (`-vn`) with bitrate chips for MP3/M4A
+- **Compress level** chips: Low / Balanced / High / Max / Original / Custom bitrate
+  - Higher level = more compression (smaller file); Low = better quality
+- Foldable option sections (Compress, Video, Audio, Trim, Output) — less clutter
 - **Resolution** chips (Original / 1080p / 720p / 480p / Custom) — no upscale above source
 - **FPS** chips (Original / 60 / 30 / 24)
 - **Audio** chips for video: Keep / Strip / AAC 128k / AAC 96k
-- Live **estimated output size** (approximate — reacts to format, compress, trim, resolution, fps, extract)
+- Live **estimated output size** (approximate — reacts to format, level, trim, resolution, fps, bitrates)
 - Trim with start/end (`hh:mm:ss` or seconds) — applies to extract too
-- Default output folder / format / compress via Settings
+- Job summary line + Enter-to-convert; soft-collapsed log after success
+- Default output folder / format / compress level / audio bitrate via Settings
 - Progress + cancel + open output folder when done
 - **100% local** — no uploads, no accounts, no telemetry
 
@@ -45,8 +48,8 @@ npm run build
 
 Artifacts land in `dist/`:
 
-- `FluidConvert-Setup-0.2.0.exe` — NSIS installer
-- `FluidConvert-Portable-0.2.0.exe` — portable single EXE
+- `FluidConvert-Setup-0.3.0.exe` — NSIS installer
+- `FluidConvert-Portable-0.3.0.exe` — portable single EXE
 
 ffmpeg/ffprobe are bundled via `ffmpeg-static` / `ffprobe-static`.
 

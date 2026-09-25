@@ -2,27 +2,55 @@
   const $ = (id) => document.getElementById(id);
 
   const AUDIO_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'flac']);
+  const LOSSY_AUDIO = new Set(['mp3', 'm4a', 'aac']);
+
+  const COMPRESS_LABELS = {
+    low: 'Low',
+    balanced: 'Balanced',
+    high: 'High',
+    max: 'Max',
+    original: 'Original',
+    custom: 'Custom',
+  };
+
+  const LEGACY_COMPRESS = { high: 'low', small: 'high', tiny: 'max' };
+
+  function migrateCompress(key) {
+    if (!key) return 'balanced';
+    return LEGACY_COMPRESS[key] || key;
+  }
 
   const state = {
     file: null,
     format: 'mp4',
     compress: 'balanced',
+    customBitrate: '',
     resolution: 'original',
     customWidth: '',
     fps: 'original',
     audio: 'keep',
+    audioBitrate: '192',
     outputDir: null,
     lastOutputPath: null,
     running: false,
     settings: null,
+    logVisible: false,
+    sectionsOpen: {
+      compress: true,
+      video: false,
+      audio: false,
+      trim: false,
+      output: true,
+    },
   };
 
   const COMPRESS_FACTOR = {
     original: 1.0,
-    high: 0.85,
+    low: 0.85,
     balanced: 0.55,
-    small: 0.32,
-    tiny: 0.14,
+    high: 0.32,
+    max: 0.14,
+    custom: 0.5,
   };
 
   const FORMAT_FACTOR = {
@@ -53,6 +81,10 @@
     return AUDIO_FORMATS.has(state.format);
   }
 
+  function isLossyExtract() {
+    return LOSSY_AUDIO.has(state.format);
+  }
+
   function parseTimeToSeconds(value) {
     if (value === null || value === undefined) return null;
     const s = String(value).trim();
@@ -77,15 +109,37 @@
     return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
   }
 
-  function trimRatio() {
-    if (!state.file || !state.file.duration) return 1;
+  /** Parse "2500k" / "2.5M" / "2.5" → kbps number or null. */
+  function parseBitrateKbps(raw) {
+    if (raw === null || raw === undefined) return null;
+    const s = String(raw).trim().toLowerCase().replace(/\s+/g, '');
+    if (!s) return null;
+    const m = /^(\d+(?:\.\d+)?)(k|kbps|m|mbps)?$/.exec(s);
+    if (!m) return null;
+    const num = parseFloat(m[1]);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    const unit = m[2] || '';
+    if (unit === 'm' || unit === 'mbps') return Math.round(num * 1000);
+    if (unit === 'k' || unit === 'kbps') return Math.round(num);
+    if (num <= 50) return Math.round(num * 1000);
+    return Math.round(num);
+  }
+
+  function trimDurationSec() {
+    if (!state.file || !state.file.duration) return state.file?.duration || 0;
     const dur = state.file.duration;
     const start = parseTimeToSeconds($('trim-start').value) || 0;
     let end = parseTimeToSeconds($('trim-end').value);
     if (end === null || end <= 0) end = dur;
     const clippedStart = Math.max(0, Math.min(start, dur));
     const clippedEnd = Math.max(clippedStart, Math.min(end, dur));
-    const len = clippedEnd - clippedStart;
+    return Math.max(0, clippedEnd - clippedStart);
+  }
+
+  function trimRatio() {
+    if (!state.file || !state.file.duration) return 1;
+    const dur = state.file.duration;
+    const len = trimDurationSec();
     if (len <= 0 || dur <= 0) return 1;
     return Math.min(1, len / dur);
   }
@@ -116,12 +170,13 @@
     const src = state.file.size || 0;
     if (!src) return null;
     const ratio = trimRatio();
-    const dur = (state.file.duration || 10) * ratio;
+    const dur = trimDurationSec() || (state.file.duration || 10) * ratio;
 
     if (isExtract()) {
-      const rates = { mp3: 24, m4a: 24, aac: 24, wav: 176, flac: 90 }; // KB/s rough
-      const kbps = rates[state.format] || 24;
-      return Math.max(16 * 1024, dur * kbps * 1024);
+      if (state.format === 'wav') return Math.max(16 * 1024, dur * 176 * 1024);
+      if (state.format === 'flac') return Math.max(16 * 1024, dur * 90 * 1024);
+      const kbps = parseInt(state.audioBitrate, 10) || 192;
+      return Math.max(16 * 1024, dur * (kbps / 8) * 1024);
     }
 
     if (state.format === 'gif') {
@@ -129,6 +184,18 @@
       const fpsMul = state.fps === 'original' ? 1 : (parseInt(state.fps, 10) || 12) / 12;
       const gifEst = dur * 180 * 1024 * scale * Math.min(2, fpsMul);
       return Math.max(50 * 1024, gifEst);
+    }
+
+    if (state.compress === 'custom') {
+      const vKbps = parseBitrateKbps(state.customBitrate || $('custom-bitrate').value);
+      if (vKbps) {
+        let audioKbps = 160;
+        if (state.audio === 'strip') audioKbps = 0;
+        else if (state.audio === 'aac96') audioKbps = 96;
+        else if (state.audio === 'aac128') audioKbps = 128;
+        const totalKbps = vKbps + audioKbps;
+        return Math.max(32 * 1024, dur * (totalKbps / 8) * 1024);
+      }
     }
 
     let factor = (COMPRESS_FACTOR[state.compress] || 0.55) * (FORMAT_FACTOR[state.format] || 1);
@@ -143,7 +210,7 @@
       factor = 1.0 * (FORMAT_FACTOR[state.format] || 1) * resolutionFactor() * (FPS_FACTOR[state.fps] || 1);
       if (state.format === 'webm') factor *= 0.9;
       if (state.resolution !== 'original' || state.fps !== 'original') {
-        factor *= 0.85; // re-encode
+        factor *= 0.85;
       }
     }
 
@@ -168,18 +235,142 @@
     });
   }
 
+  function setSectionOpen(section, open, persist) {
+    const fold = document.querySelector(`.fold[data-section="${section}"]`);
+    if (!fold) return;
+    const header = fold.querySelector('.fold-header');
+    const body = fold.querySelector('.fold-body');
+    const chevron = fold.querySelector('.fold-chevron');
+    state.sectionsOpen[section] = open;
+    header?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    body?.classList.toggle('hidden', !open);
+    if (chevron) chevron.textContent = open ? '▾' : '▸';
+    if (persist) persistSections();
+  }
+
+  function persistSections() {
+    window.fluid.setSettings({ sectionsOpen: { ...state.sectionsOpen } }).catch(() => {});
+  }
+
+  function updateSummaries() {
+    const cLabel = state.compress === 'custom'
+      ? `Custom ${state.customBitrate || '…'}`
+      : (COMPRESS_LABELS[state.compress] || state.compress);
+    $('sum-compress').textContent = cLabel;
+
+    const resLabel = state.resolution === 'custom'
+      ? (state.customWidth ? `${state.customWidth}w` : 'Custom')
+      : state.resolution;
+    const fpsLabel = state.fps === 'original' ? 'Original fps' : `${state.fps} fps`;
+    $('sum-video').textContent = `${resLabel} · ${fpsLabel}`;
+
+    if (isExtract()) {
+      if (isLossyExtract()) {
+        $('sum-audio').textContent = `${state.audioBitrate} kbps`;
+      } else {
+        $('sum-audio').textContent = 'Lossless';
+      }
+    } else if (state.format === 'gif') {
+      $('sum-audio').textContent = 'N/A (GIF)';
+    } else {
+      const audioLabels = { keep: 'Keep', strip: 'Strip', aac128: 'AAC 128k', aac96: 'AAC 96k' };
+      $('sum-audio').textContent = audioLabels[state.audio] || state.audio;
+    }
+
+    const start = $('trim-start').value.trim();
+    const end = $('trim-end').value.trim();
+    if (!start && !end) {
+      $('sum-trim').textContent = 'Full length';
+    } else {
+      $('sum-trim').textContent = `${start || '0:00'} → ${end || 'end'}`;
+    }
+
+    const out = state.outputDir || $('output-dir').value;
+    $('sum-output').textContent = out
+      ? (out.length > 42 ? `…${out.slice(-40)}` : out)
+      : 'Same as source';
+  }
+
+  function updateJobSummary() {
+    const el = $('job-summary');
+    if (!state.file) {
+      el.textContent = 'Load a file to convert';
+      el.classList.remove('ready');
+      return;
+    }
+    el.classList.add('ready');
+    const parts = [];
+    parts.push(state.format.toUpperCase());
+    if (isExtract()) {
+      if (isLossyExtract()) parts.push(`${state.audioBitrate} kbps`);
+      else parts.push('lossless');
+    } else {
+      if (state.format !== 'gif') {
+        const lvl = state.compress === 'custom'
+          ? `Custom ${state.customBitrate || '…'}`
+          : (COMPRESS_LABELS[state.compress] || state.compress);
+        parts.push(lvl);
+      }
+      if (state.resolution !== 'original') parts.push(state.resolution);
+      if (state.fps !== 'original') parts.push(`${state.fps}fps`);
+      if (state.format !== 'gif' && state.audio !== 'keep') {
+        parts.push(state.audio === 'strip' ? 'no audio' : state.audio);
+      }
+    }
+    const start = $('trim-start').value.trim();
+    const end = $('trim-end').value.trim();
+    if (start || end) parts.push('trimmed');
+
+    el.innerHTML = parts.map((p, i) => (i === 0 ? p : `<span class="sep">·</span>${p}`)).join('');
+  }
+
   function updateModeUI() {
     const extract = isExtract();
     document.querySelectorAll('.video-only').forEach((el) => {
       el.classList.toggle('hidden', extract);
     });
-    // GIF: hide audio row (already video-only); resolution/fps still useful
-    if (!extract && state.format === 'gif') {
-      $('row-audio')?.classList.add('hidden');
-      $('row-compress')?.classList.remove('hidden');
+
+    const audioVideo = $('audio-video-opts');
+    const audioBitrate = $('audio-bitrate-opts');
+    const losslessHint = $('audio-lossless-hint');
+
+    if (extract) {
+      audioVideo?.classList.add('hidden');
+      if (isLossyExtract()) {
+        audioBitrate?.classList.remove('hidden');
+        losslessHint?.classList.add('hidden');
+        // Open audio section for extract bitrate
+        if (!state.sectionsOpen.audio) setSectionOpen('audio', true, true);
+      } else {
+        audioBitrate?.classList.add('hidden');
+        losslessHint?.classList.remove('hidden');
+      }
+    } else if (state.format === 'gif') {
+      audioVideo?.classList.add('hidden');
+      audioBitrate?.classList.add('hidden');
+      losslessHint?.classList.add('hidden');
+    } else {
+      audioVideo?.classList.remove('hidden');
+      audioBitrate?.classList.add('hidden');
+      losslessHint?.classList.add('hidden');
     }
+
     $('custom-width-wrap').classList.toggle('hidden', extract || state.resolution !== 'custom');
+    $('custom-bitrate-wrap').classList.toggle('hidden', extract || state.compress !== 'custom');
+
     $('btn-convert').textContent = extract ? 'Extract' : 'Convert';
+    updateSummaries();
+    updateJobSummary();
+    updateConvertEnabled();
+  }
+
+  function updateConvertEnabled() {
+    const ready = Boolean(state.file) && !state.running;
+    let ok = ready;
+    if (ready && !isExtract() && state.compress === 'custom') {
+      ok = Boolean(parseBitrateKbps(state.customBitrate || $('custom-bitrate').value));
+    }
+    $('btn-convert').disabled = !ok;
   }
 
   function applyTheme(resolved) {
@@ -188,10 +379,16 @@
 
   function setRunning(running) {
     state.running = running;
-    $('btn-convert').disabled = running || !state.file;
+    updateConvertEnabled();
     $('btn-cancel').classList.toggle('hidden', !running);
     $('btn-browse').disabled = running;
     $('btn-clear').disabled = running;
+  }
+
+  function setLogVisible(visible) {
+    state.logVisible = visible;
+    $('log').classList.toggle('hidden', !visible);
+    $('btn-toggle-log').textContent = visible ? 'Hide log' : 'Show log';
   }
 
   function showFile(probe) {
@@ -201,14 +398,18 @@
     $('file-name').textContent = probe.name;
     $('file-duration').textContent = probe.durationLabel || '—';
     $('file-size').textContent = probe.sizeLabel || '—';
-    const res = probe.width && probe.height ? `${probe.width}×${probe.height}` : (probe.hasAudio && !probe.hasVideo ? 'audio' : '—');
+    const res = probe.width && probe.height
+      ? `${probe.width}×${probe.height}`
+      : (probe.hasAudio && !probe.hasVideo ? 'audio' : '—');
     $('file-res').textContent = res;
     if (!state.outputDir) {
       $('output-dir').value = '';
       $('output-dir').placeholder = 'Same as source';
     }
-    $('btn-convert').disabled = state.running;
+    $('done-banner').classList.add('hidden');
     updateEstimate();
+    updateJobSummary();
+    updateConvertEnabled();
     appendLog(`Loaded ${probe.name} (${probe.durationLabel}, ${probe.sizeLabel})`);
   }
 
@@ -217,11 +418,14 @@
     state.lastOutputPath = null;
     $('drop-empty').classList.remove('hidden');
     $('drop-file').classList.add('hidden');
-    $('btn-convert').disabled = true;
     $('btn-open-out').classList.add('hidden');
+    $('done-banner').classList.add('hidden');
     $('trim-start').value = '';
     $('trim-end').value = '';
     updateEstimate();
+    updateJobSummary();
+    updateSummaries();
+    updateConvertEnabled();
     setProgress({ percent: 0, indeterminate: false, status: 'Ready' });
   }
 
@@ -257,6 +461,7 @@
       clearFile();
       setProgress({ percent: 0, indeterminate: false, status: 'Probe failed' });
       appendLog(`Error: ${err.message || err}`);
+      setLogVisible(true);
     }
   }
 
@@ -269,6 +474,8 @@
         lastResolution: state.resolution,
         lastFps: state.fps,
         lastAudio: state.audio,
+        lastAudioBitrate: state.audioBitrate,
+        lastCustomBitrate: state.customBitrate,
       });
     } catch (_) { /* ignore */ }
   }
@@ -279,7 +486,8 @@
     $('settings-out-dir').value = s.defaultOutputFolder || '';
     $('settings-out-dir').placeholder = 'Same as source';
     $('settings-format').value = s.defaultFormat || 'mp4';
-    $('settings-compress').value = s.defaultCompress || 'balanced';
+    $('settings-compress').value = migrateCompress(s.defaultCompress || 'balanced');
+    $('settings-audio-bitrate').value = s.defaultAudioBitrate || '192';
     $('settings-remember').checked = s.rememberLastUsed !== false;
     $('settings-backdrop').classList.remove('hidden');
     $('settings-panel').classList.remove('hidden');
@@ -289,6 +497,79 @@
     $('settings-backdrop').classList.add('hidden');
     $('settings-panel').classList.add('hidden');
   }
+
+  async function doConvert() {
+    if (!state.file || state.running) return;
+    if (!isExtract() && state.compress === 'custom') {
+      const kbps = parseBitrateKbps(state.customBitrate || $('custom-bitrate').value);
+      if (!kbps) {
+        appendLog('Enter a valid custom bitrate (e.g. 2500k or 2.5)');
+        setLogVisible(true);
+        return;
+      }
+    }
+
+    setRunning(true);
+    $('btn-open-out').classList.add('hidden');
+    $('done-banner').classList.add('hidden');
+    setProgress({ percent: 0, indeterminate: true, status: 'Starting…' });
+    setLogVisible(true);
+
+    const label = isExtract()
+      ? `Extract → ${state.format.toUpperCase()} / ${isLossyExtract() ? state.audioBitrate + 'k' : 'lossless'}`
+      : `Convert → ${state.format.toUpperCase()} / ${state.compress}${state.compress === 'custom' ? ' ' + state.customBitrate : ''} / ${state.resolution} / ${state.fps}fps / ${state.audio}`;
+    appendLog(label);
+
+    try {
+      const result = await window.fluid.convert({
+        inputPath: state.file.path,
+        outputDir: state.outputDir || null,
+        format: state.format,
+        compress: state.compress,
+        trimStart: $('trim-start').value.trim(),
+        trimEnd: $('trim-end').value.trim(),
+        duration: state.file.duration,
+        resolution: state.resolution,
+        customWidth: state.customWidth || $('custom-width').value.trim(),
+        fps: state.fps,
+        audio: state.audio,
+        sourceWidth: state.file.width || null,
+        customBitrate: state.customBitrate || $('custom-bitrate').value.trim(),
+        audioBitrate: state.audioBitrate,
+      });
+
+      if (result.cancelled) {
+        appendLog('Cancelled');
+        setProgress({ percent: 0, indeterminate: false, status: 'Cancelled' });
+      } else {
+        state.lastOutputPath = result.outputPath;
+        appendLog(`Done → ${result.outputPath} (${result.sizeLabel})`);
+        setProgress({ percent: 100, indeterminate: false, status: 'Done' });
+        $('btn-open-out').classList.remove('hidden');
+        $('done-path').textContent = `Saved ${result.sizeLabel} · ${result.outputPath}`;
+        $('done-banner').classList.remove('hidden');
+        // Soft-collapse log after success so Convert stays reachable
+        setLogVisible(false);
+      }
+      await persistLastUsed();
+    } catch (err) {
+      appendLog(`Error: ${err.message || err}`);
+      setProgress({ percent: 0, indeterminate: false, status: 'Failed' });
+      setLogVisible(true);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  // —— Fold headers ——
+  document.querySelectorAll('.fold-header').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const fold = btn.closest('.fold');
+      const section = fold?.dataset.section;
+      if (!section) return;
+      setSectionOpen(section, !state.sectionsOpen[section], true);
+    });
+  });
 
   // —— Chip handlers ——
   $('format-chips').addEventListener('click', (e) => {
@@ -306,7 +587,20 @@
     if (!btn) return;
     state.compress = btn.dataset.compress;
     setChips('compress-chips', 'compress', state.compress);
+    updateModeUI();
     updateEstimate();
+    persistLastUsed();
+  });
+
+  $('custom-bitrate').addEventListener('input', () => {
+    state.customBitrate = $('custom-bitrate').value.trim();
+    updateSummaries();
+    updateJobSummary();
+    updateEstimate();
+    updateConvertEnabled();
+  });
+
+  $('custom-bitrate').addEventListener('change', () => {
     persistLastUsed();
   });
 
@@ -322,6 +616,8 @@
 
   $('custom-width').addEventListener('input', () => {
     state.customWidth = $('custom-width').value.trim();
+    updateSummaries();
+    updateJobSummary();
     updateEstimate();
   });
 
@@ -330,6 +626,8 @@
     if (!btn) return;
     state.fps = btn.dataset.fps;
     setChips('fps-chips', 'fps', state.fps);
+    updateSummaries();
+    updateJobSummary();
     updateEstimate();
     persistLastUsed();
   });
@@ -339,13 +637,34 @@
     if (!btn) return;
     state.audio = btn.dataset.audio;
     setChips('audio-chips', 'audio', state.audio);
+    updateSummaries();
+    updateJobSummary();
+    updateEstimate();
+    persistLastUsed();
+  });
+
+  $('audio-bitrate-chips').addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    state.audioBitrate = btn.dataset.abitrate;
+    setChips('audio-bitrate-chips', 'abitrate', state.audioBitrate);
+    updateSummaries();
+    updateJobSummary();
     updateEstimate();
     persistLastUsed();
   });
 
   ['trim-start', 'trim-end'].forEach((id) => {
-    $(id).addEventListener('input', updateEstimate);
-    $(id).addEventListener('change', updateEstimate);
+    $(id).addEventListener('input', () => {
+      updateEstimate();
+      updateSummaries();
+      updateJobSummary();
+    });
+    $(id).addEventListener('change', () => {
+      updateEstimate();
+      updateSummaries();
+      updateJobSummary();
+    });
   });
 
   // —— Drop / browse ——
@@ -397,6 +716,7 @@
     if (chosen) {
       state.outputDir = chosen;
       $('output-dir').value = chosen;
+      updateSummaries();
     }
   });
 
@@ -404,6 +724,7 @@
     state.outputDir = null;
     $('output-dir').value = '';
     $('output-dir').placeholder = 'Same as source';
+    updateSummaries();
   });
 
   // —— Settings ——
@@ -431,6 +752,7 @@
       if (!state.outputDir) {
         state.outputDir = chosen;
         $('output-dir').value = chosen;
+        updateSummaries();
       }
     }
   });
@@ -448,54 +770,16 @@
     state.settings = await window.fluid.setSettings({ defaultCompress: $('settings-compress').value });
   });
 
+  $('settings-audio-bitrate').addEventListener('change', async () => {
+    state.settings = await window.fluid.setSettings({ defaultAudioBitrate: $('settings-audio-bitrate').value });
+  });
+
   $('settings-remember').addEventListener('change', async () => {
     state.settings = await window.fluid.setSettings({ rememberLastUsed: $('settings-remember').checked });
   });
 
-  // —— Convert / cancel ——
-  $('btn-convert').addEventListener('click', async () => {
-    if (!state.file || state.running) return;
-    setRunning(true);
-    $('btn-open-out').classList.add('hidden');
-    setProgress({ percent: 0, indeterminate: true, status: 'Starting…' });
-    const label = isExtract()
-      ? `Extract → ${state.format.toUpperCase()}`
-      : `Convert → ${state.format.toUpperCase()} / ${state.compress} / ${state.resolution} / ${state.fps}fps / ${state.audio}`;
-    appendLog(label);
-
-    try {
-      const result = await window.fluid.convert({
-        inputPath: state.file.path,
-        outputDir: state.outputDir || null,
-        format: state.format,
-        compress: state.compress,
-        trimStart: $('trim-start').value.trim(),
-        trimEnd: $('trim-end').value.trim(),
-        duration: state.file.duration,
-        resolution: state.resolution,
-        customWidth: state.customWidth || $('custom-width').value.trim(),
-        fps: state.fps,
-        audio: state.audio,
-        sourceWidth: state.file.width || null,
-      });
-
-      if (result.cancelled) {
-        appendLog('Cancelled');
-        setProgress({ percent: 0, indeterminate: false, status: 'Cancelled' });
-      } else {
-        state.lastOutputPath = result.outputPath;
-        appendLog(`Done → ${result.outputPath} (${result.sizeLabel})`);
-        setProgress({ percent: 100, indeterminate: false, status: 'Done' });
-        $('btn-open-out').classList.remove('hidden');
-      }
-      await persistLastUsed();
-    } catch (err) {
-      appendLog(`Error: ${err.message || err}`);
-      setProgress({ percent: 0, indeterminate: false, status: 'Failed' });
-    } finally {
-      setRunning(false);
-    }
-  });
+  // —— Convert / cancel / log ——
+  $('btn-convert').addEventListener('click', () => { doConvert(); });
 
   $('btn-cancel').addEventListener('click', async () => {
     appendLog('Cancelling…');
@@ -508,6 +792,20 @@
     } else if (state.outputDir) {
       await window.fluid.openPath(state.outputDir);
     }
+  });
+
+  $('btn-toggle-log').addEventListener('click', () => {
+    setLogVisible(!state.logVisible);
+  });
+
+  // Enter to convert when ready (not typing in an input)
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (state.running || !state.file || $('btn-convert').disabled) return;
+    e.preventDefault();
+    doConvert();
   });
 
   window.fluid.onProgress((data) => setProgress(data));
@@ -528,22 +826,41 @@
 
       const remember = settings.rememberLastUsed !== false;
       const format = (remember && settings.lastFormat) || settings.defaultFormat || 'mp4';
-      const compress = (remember && settings.lastCompress) || settings.defaultCompress || 'balanced';
+      const compress = migrateCompress(
+        (remember && settings.lastCompress) || settings.defaultCompress || 'balanced'
+      );
       const resolution = (remember && settings.lastResolution) || 'original';
       const fps = (remember && settings.lastFps) || 'original';
       const audio = (remember && settings.lastAudio) || 'keep';
+      const audioBitrate = (remember && settings.lastAudioBitrate)
+        || settings.defaultAudioBitrate
+        || '192';
+      const customBitrate = (remember && settings.lastCustomBitrate) || '';
 
       state.format = format;
       state.compress = compress;
       state.resolution = resolution;
       state.fps = fps;
       state.audio = audio;
+      state.audioBitrate = String(audioBitrate);
+      state.customBitrate = customBitrate || '';
+
+      if (settings.sectionsOpen && typeof settings.sectionsOpen === 'object') {
+        state.sectionsOpen = { ...state.sectionsOpen, ...settings.sectionsOpen };
+      }
 
       setChips('format-chips', 'format', state.format);
       setChips('compress-chips', 'compress', state.compress);
       setChips('resolution-chips', 'resolution', state.resolution);
       setChips('fps-chips', 'fps', state.fps);
       setChips('audio-chips', 'audio', state.audio);
+      setChips('audio-bitrate-chips', 'abitrate', state.audioBitrate);
+      if (state.customBitrate) $('custom-bitrate').value = state.customBitrate;
+
+      // Apply fold open/closed from settings
+      Object.keys(state.sectionsOpen).forEach((sec) => {
+        setSectionOpen(sec, Boolean(state.sectionsOpen[sec]), false);
+      });
 
       if (settings.defaultOutputFolder) {
         state.outputDir = settings.defaultOutputFolder;
@@ -556,7 +873,9 @@
       applyTheme('dark');
       updateModeUI();
     }
+    setLogVisible(false);
     updateEstimate();
+    updateConvertEnabled();
   }
 
   init();

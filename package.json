@@ -1,7 +1,7 @@
 {
   "name": "fluidconvert",
   "productName": "FluidConvert",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Compact, minimal Windows video converter - convert, compress, trim, and extract locally.",
   "main": "main.js",
   "author": "GTR / heeraj",

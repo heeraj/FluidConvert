@@ -11,13 +11,43 @@ const DEFAULT_SETTINGS = {
   defaultOutputFolder: null,
   defaultFormat: 'mp4',
   defaultCompress: 'balanced',
+  defaultAudioBitrate: '192',
   rememberLastUsed: true,
   lastFormat: null,
   lastCompress: null,
   lastResolution: 'original',
   lastFps: 'original',
   lastAudio: 'keep',
+  lastAudioBitrate: null,
+  lastCustomBitrate: '',
+  sectionsOpen: {
+    compress: true,
+    video: false,
+    audio: false,
+    trim: false,
+    output: true,
+  },
 };
+
+/** Migrate old compress keys (quality naming) → level naming (higher = more compress). */
+function migrateCompressKey(key) {
+  const map = { high: 'low', small: 'high', tiny: 'max' };
+  if (!key) return key;
+  return map[key] || key;
+}
+
+function migrateSettings(raw) {
+  const s = { ...raw };
+  if (s.defaultCompress) s.defaultCompress = migrateCompressKey(s.defaultCompress);
+  if (s.lastCompress) s.lastCompress = migrateCompressKey(s.lastCompress);
+  if (!s.sectionsOpen || typeof s.sectionsOpen !== 'object') {
+    s.sectionsOpen = { ...DEFAULT_SETTINGS.sectionsOpen };
+  } else {
+    s.sectionsOpen = { ...DEFAULT_SETTINGS.sectionsOpen, ...s.sectionsOpen };
+  }
+  if (!s.defaultAudioBitrate) s.defaultAudioBitrate = '192';
+  return s;
+}
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -28,14 +58,22 @@ function loadSettings() {
     const p = settingsPath();
     if (!fs.existsSync(p)) return { ...DEFAULT_SETTINGS };
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
-    return { ...DEFAULT_SETTINGS, ...raw };
+    return migrateSettings({ ...DEFAULT_SETTINGS, ...raw });
   } catch (_) {
     return { ...DEFAULT_SETTINGS };
   }
 }
 
 function saveSettings(partial) {
-  const next = { ...loadSettings(), ...partial };
+  const current = loadSettings();
+  const next = migrateSettings({ ...current, ...partial });
+  if (partial && partial.sectionsOpen) {
+    next.sectionsOpen = {
+      ...DEFAULT_SETTINGS.sectionsOpen,
+      ...(current.sectionsOpen || {}),
+      ...partial.sectionsOpen,
+    };
+  }
   const p = settingsPath();
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -109,7 +147,7 @@ function createWindow() {
 
   mainWindow = new BrowserWindow({
     width: 920,
-    height: 700,
+    height: 720,
     minWidth: 800,
     minHeight: 600,
     backgroundColor: overlay.color,
@@ -205,6 +243,33 @@ const AUDIO_EXTRACT_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'flac']);
 
 function isAudioExtract(format) {
   return AUDIO_EXTRACT_FORMATS.has((format || '').toLowerCase());
+}
+
+/** Parse user bitrate like "2500k", "2.5M", "2500", "2.5" (Mbps) → ffmpeg string or null. */
+function parseVideoBitrate(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim().toLowerCase().replace(/\s+/g, '');
+  if (!s) return null;
+  const m = /^(\d+(?:\.\d+)?)(k|kbps|m|mbps)?$/.exec(s);
+  if (!m) return null;
+  const num = parseFloat(m[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  const unit = m[2] || '';
+  if (unit === 'm' || unit === 'mbps') {
+    return `${Math.round(num * 1000)}k`;
+  }
+  if (unit === 'k' || unit === 'kbps') {
+    return `${Math.round(num)}k`;
+  }
+  // bare number: if <= 50 treat as Mbps, else as kbps
+  if (num <= 50) return `${Math.round(num * 1000)}k`;
+  return `${Math.round(num)}k`;
+}
+
+function parseAudioBitrateKbps(raw) {
+  const n = parseInt(String(raw || '192').replace(/k$/i, ''), 10);
+  if (![320, 192, 128, 96, 64].includes(n)) return 192;
+  return n;
 }
 
 ipcMain.handle('dialog:openVideo', async () => {
@@ -331,12 +396,22 @@ ipcMain.handle('media:probe', async (_e, filePath) => {
   });
 });
 
+/**
+ * Compress level presets — higher level = more compression / smaller file.
+ * low ≈ old "high" quality (CRF 18)
+ * balanced ≈ CRF 23
+ * high ≈ old "small" (CRF 28)
+ * max ≈ old "tiny" (CRF 32 + half scale)
+ * original = stream copy when possible
+ * custom = -b:v from user
+ */
 const COMPRESS_PRESETS = {
   original: { crf: null, copy: true, label: 'Original' },
-  high: { crf: 18, videoBitrate: null, label: 'High' },
+  low: { crf: 18, videoBitrate: null, label: 'Low' },
   balanced: { crf: 23, videoBitrate: null, label: 'Balanced' },
-  small: { crf: 28, videoBitrate: null, label: 'Small' },
-  tiny: { crf: 32, videoBitrate: '800k', scale: 'iw*0.5:ih*0.5', label: 'Tiny' },
+  high: { crf: 28, videoBitrate: null, label: 'High' },
+  max: { crf: 32, videoBitrate: '800k', scale: 'iw*0.5:ih*0.5', label: 'Max' },
+  custom: { crf: null, videoBitrate: null, label: 'Custom', useCustomBitrate: true },
 };
 
 const RES_WIDTH = {
@@ -359,7 +434,6 @@ function resolveTargetWidth(resolution, customWidth, sourceWidth) {
   if (sourceWidth && Number.isFinite(sourceWidth) && sourceWidth > 0) {
     w = Math.min(w, sourceWidth);
   }
-  // even width for yuv420
   if (w % 2 !== 0) w -= 1;
   if (w < 2) return null;
   return w;
@@ -405,7 +479,6 @@ function applyAudioArgs(args, audioMode, fmt) {
     args.push('-c:a', 'aac', '-b:a', '96k');
     return;
   }
-  // keep — set sensible defaults per container if we are re-encoding video
   if (fmt === 'webm') {
     args.push('-c:a', 'libopus', '-b:a', '128k');
   } else {
@@ -422,9 +495,12 @@ function buildFfmpegArgs(opts) {
     trimStart,
     trimEnd,
     duration,
+    customBitrate,
+    audioBitrate,
   } = opts;
 
-  const preset = COMPRESS_PRESETS[compress] || COMPRESS_PRESETS.balanced;
+  const level = migrateCompressKey(compress) || 'balanced';
+  const preset = COMPRESS_PRESETS[level] || COMPRESS_PRESETS.balanced;
   const args = ['-y', '-hide_banner', '-progress', 'pipe:1', '-nostats'];
   const fmt = (format || 'mp4').toLowerCase();
 
@@ -445,10 +521,11 @@ function buildFfmpegArgs(opts) {
   // —— Audio extract ——
   if (isAudioExtract(fmt)) {
     args.push('-vn');
+    const aBit = `${parseAudioBitrateKbps(audioBitrate)}k`;
     if (fmt === 'mp3') {
-      args.push('-c:a', 'libmp3lame', '-b:a', '192k');
+      args.push('-c:a', 'libmp3lame', '-b:a', aBit);
     } else if (fmt === 'm4a' || fmt === 'aac') {
-      args.push('-c:a', 'aac', '-b:a', '192k');
+      args.push('-c:a', 'aac', '-b:a', aBit);
     } else if (fmt === 'wav') {
       args.push('-c:a', 'pcm_s16le');
     } else if (fmt === 'flac') {
@@ -466,10 +543,15 @@ function buildFfmpegArgs(opts) {
   );
   const audioMode = (opts.audio || 'keep').toLowerCase();
   const canCopy = preset.copy
-    && compress === 'original'
+    && level === 'original'
     && ['mp4', 'mov', 'mkv'].includes(fmt)
     && !hasCustomVideo
     && (audioMode === 'keep');
+
+  const customBv = level === 'custom' ? parseVideoBitrate(customBitrate) : null;
+  if (level === 'custom' && !customBv) {
+    throw new Error('Custom bitrate required (e.g. 2500k or 2.5)');
+  }
 
   if (fmt === 'gif') {
     if (vf.length) args.push('-vf', vf.join(','));
@@ -480,15 +562,27 @@ function buildFfmpegArgs(opts) {
   } else {
     if (fmt === 'webm') {
       args.push('-c:v', 'libvpx-vp9');
-      if (preset.crf != null) args.push('-crf', String(preset.crf), '-b:v', '0');
+      if (customBv) {
+        args.push('-b:v', customBv);
+      } else if (preset.crf != null) {
+        args.push('-crf', String(preset.crf), '-b:v', '0');
+      }
     } else if (fmt === 'avi') {
       args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p');
-      if (preset.crf != null) args.push('-crf', String(preset.crf));
-      if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
+      if (customBv) {
+        args.push('-b:v', customBv);
+      } else {
+        if (preset.crf != null) args.push('-crf', String(preset.crf));
+        if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
+      }
     } else {
       args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium');
-      if (preset.crf != null) args.push('-crf', String(preset.crf));
-      if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
+      if (customBv) {
+        args.push('-b:v', customBv);
+      } else {
+        if (preset.crf != null) args.push('-crf', String(preset.crf));
+        if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
+      }
       if (fmt === 'mp4' || fmt === 'mov') {
         args.push('-movflags', '+faststart');
       }
@@ -537,6 +631,8 @@ ipcMain.handle('job:convert', async (_e, options) => {
     fps,
     audio,
     sourceWidth,
+    customBitrate,
+    audioBitrate,
   } = options;
 
   if (!inputPath || !fs.existsSync(inputPath)) {
@@ -572,6 +668,8 @@ ipcMain.handle('job:convert', async (_e, options) => {
     fps: fps || 'original',
     audio: audio || 'keep',
     sourceWidth: sourceWidth || null,
+    customBitrate: customBitrate || '',
+    audioBitrate: audioBitrate || '192',
   });
 
   const startSec = parseTimeToSeconds(trimStart) || 0;
