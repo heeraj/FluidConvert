@@ -2,288 +2,328 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FluidConvert</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="titlebar-drag" aria-hidden="true"></div>
+  <!-- Titlebar (blends into app; Windows caption buttons overlay on the right) -->
+  <header class="titlebar">
+    <div class="brand">
+      <span class="brand-mark" data-icon="logo"></span>
+      <span class="brand-name">FluidConvert</span>
+      <span class="badge">v0.4.0 · Early</span>
+    </div>
+    <div class="titlebar-actions">
+      <button type="button" id="btn-log" class="icon-btn" title="Activity log" aria-label="Activity log" data-icon="log"></button>
+      <button type="button" id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings" data-icon="settings"></button>
+    </div>
+  </header>
 
   <div class="app">
-    <header class="header titlebar-content">
-      <div class="brand">
-        <span class="brand-mark"></span>
-        <div>
-          <h1>FluidConvert</h1>
-          <p class="subtitle">Convert · Compress · Trim · Extract</p>
-        </div>
-      </div>
-      <div class="header-actions">
-        <span class="badge">v0.3.0 Early</span>
-        <button type="button" id="btn-settings" class="icon-btn no-drag" title="Settings" aria-label="Settings">⚙</button>
-      </div>
-    </header>
+    <!-- Quick presets -->
+    <nav class="presets" id="presets" aria-label="Quick presets">
+      <span class="row-label">Quick</span>
+      <button type="button" class="preset" data-preset="small"><span data-icon="shrink"></span>Smaller file</button>
+      <button type="button" class="preset" data-preset="share"><span data-icon="share"></span>Share · 720p</button>
+      <button type="button" class="preset" data-preset="hq"><span data-icon="sparkle"></span>High quality</button>
+      <button type="button" class="preset" data-preset="mp3"><span data-icon="music"></span>Extract MP3</button>
+      <button type="button" class="preset" data-preset="gif"><span data-icon="gif"></span>GIF</button>
+    </nav>
 
-    <section id="dropzone" class="card dropzone" tabindex="0">
-      <div id="drop-empty" class="drop-empty">
-        <div class="drop-icon">↓</div>
-        <p class="drop-title">Drop a video here</p>
-        <p class="drop-hint">or <button type="button" id="btn-browse" class="link-btn">browse</button> · audio OK for extract</p>
-      </div>
-      <div id="drop-file" class="drop-file hidden">
-        <div class="file-meta">
-          <div class="file-name" id="file-name">—</div>
-          <div class="file-stats">
-            <span id="file-duration">—</span>
-            <span class="dot">·</span>
-            <span id="file-size">—</span>
-            <span class="dot">·</span>
-            <span id="file-res">—</span>
+    <!-- Option bar: compact pills that open popovers -->
+    <div class="optbar" id="optbar" role="toolbar" aria-label="Conversion options">
+      <button type="button" class="pill pill-format" data-pop="format" aria-haspopup="dialog" aria-expanded="false">
+        <span class="pill-icon" data-icon="film" id="pill-format-icon"></span>
+        <span class="pill-value" id="pv-format">MP4</span>
+        <span class="pill-chev" data-icon="chev"></span>
+      </button>
+      <button type="button" class="pill" data-pop="level" id="pill-level" aria-haspopup="dialog" aria-expanded="false">
+        <span class="pill-key">Level</span><span class="pill-value" id="pv-level">Balanced</span>
+        <span class="pill-chev" data-icon="chev"></span>
+      </button>
+      <button type="button" class="pill" data-pop="video" id="pill-video" aria-haspopup="dialog" aria-expanded="false">
+        <span class="pill-key">Video</span><span class="pill-value" id="pv-video">Original</span>
+        <span class="pill-chev" data-icon="chev"></span>
+      </button>
+      <button type="button" class="pill" data-pop="audio" id="pill-audio" aria-haspopup="dialog" aria-expanded="false">
+        <span class="pill-key">Audio</span><span class="pill-value" id="pv-audio">Keep</span>
+        <span class="pill-chev" data-icon="chev"></span>
+      </button>
+      <button type="button" class="pill" data-pop="trim" id="pill-trim" aria-haspopup="dialog" aria-expanded="false">
+        <span class="pill-key">Trim</span><span class="pill-value" id="pv-trim">Full</span>
+        <span class="pill-chev" data-icon="chev"></span>
+      </button>
+      <button type="button" class="pill" data-pop="output" id="pill-output" aria-haspopup="dialog" aria-expanded="false">
+        <span class="pill-key">Save to</span><span class="pill-value" id="pv-output">Same folder</span>
+        <span class="pill-chev" data-icon="chev"></span>
+      </button>
+    </div>
+
+    <!-- Stage: empty drop zone or queue -->
+    <main class="stage" id="stage">
+      <section id="empty" class="empty" tabindex="0" aria-label="Drop files here or browse">
+        <div class="empty-inner">
+          <div class="empty-orb"><span data-icon="upload"></span></div>
+          <h2>Drop videos, audio or folders</h2>
+          <p>Any file works — even Chrome downloads with no extension, <b>.ts</b>, <b>.m2ts</b>, <b>.mkv</b> and more.</p>
+          <div class="empty-actions">
+            <button type="button" id="btn-browse" class="btn btn-soft"><span data-icon="plus"></span>Browse files</button>
+            <button type="button" id="btn-folder" class="btn btn-ghost"><span data-icon="folder"></span>Add folder</button>
+          </div>
+          <p class="kbd-hint"><kbd>Ctrl</kbd> + <kbd>O</kbd> to add files</p>
+        </div>
+      </section>
+
+      <section id="queue" class="queue hidden" aria-label="Queue">
+        <div class="queue-head">
+          <div class="queue-title">
+            <span id="queue-count">0 files</span>
+            <span class="queue-sub" id="queue-sub"></span>
+          </div>
+          <div class="queue-actions">
+            <button type="button" id="btn-add" class="btn btn-mini"><span data-icon="plus"></span>Add files</button>
+            <button type="button" id="btn-add-folder" class="btn btn-mini btn-quiet" title="Add folder"><span data-icon="folder"></span></button>
+            <button type="button" id="btn-clear-done" class="btn btn-mini btn-quiet hidden">Clear finished</button>
+            <button type="button" id="btn-clear-all" class="btn btn-mini btn-quiet" title="Clear queue"><span data-icon="trash"></span></button>
           </div>
         </div>
-        <button type="button" id="btn-clear" class="ghost-btn" title="Clear">✕</button>
-      </div>
+        <ul id="queue-list" class="queue-list" role="listbox" aria-label="Files"></ul>
+      </section>
+    </main>
+
+    <!-- Log drawer -->
+    <section id="log-wrap" class="log-wrap hidden">
+      <div class="log-head"><span>Activity</span><button type="button" id="btn-log-copy" class="btn btn-mini btn-quiet">Copy</button></div>
+      <pre id="log" class="log" aria-live="polite"></pre>
     </section>
 
-    <section class="card options">
-      <div class="option-row format-row">
-        <label class="opt-label">Format</label>
-        <div class="chip-row" id="format-chips" role="group" aria-label="Output format">
-          <button type="button" class="chip active" data-format="mp4">MP4</button>
-          <button type="button" class="chip" data-format="mov">MOV</button>
-          <button type="button" class="chip" data-format="mkv">MKV</button>
-          <button type="button" class="chip" data-format="webm">WebM</button>
-          <button type="button" class="chip" data-format="avi">AVI</button>
-          <button type="button" class="chip" data-format="gif">GIF</button>
-          <button type="button" class="chip chip-extract" data-format="mp3">MP3</button>
-          <button type="button" class="chip chip-extract" data-format="m4a">M4A</button>
-          <button type="button" class="chip chip-extract" data-format="wav">WAV</button>
-          <button type="button" class="chip chip-extract" data-format="flac">FLAC</button>
+    <!-- Action bar -->
+    <footer class="actionbar">
+      <div class="overall">
+        <div class="overall-line">
+          <span id="overall-status" class="overall-status">Ready when you are</span>
+          <span id="overall-est" class="overall-est"></span>
         </div>
+        <div class="overall-track"><div id="overall-bar" class="overall-bar"></div></div>
+        <div id="job-summary" class="job-summary"></div>
       </div>
-
-      <!-- Compress level (open by default) -->
-      <div class="fold video-only" id="fold-compress" data-section="compress">
-        <button type="button" class="fold-header" aria-expanded="true">
-          <span class="fold-chevron">▾</span>
-          <span class="fold-title">Compress level</span>
-          <span class="fold-summary" id="sum-compress">Balanced</span>
-        </button>
-        <div class="fold-body">
-          <div class="chip-row" id="compress-chips" role="group" aria-label="Compress level">
-            <button type="button" class="chip" data-compress="low" title="Light compress · better quality">Low</button>
-            <button type="button" class="chip active" data-compress="balanced" title="Mid compress">Balanced</button>
-            <button type="button" class="chip" data-compress="high" title="More compress · smaller file">High</button>
-            <button type="button" class="chip" data-compress="max" title="Strongest compress">Max</button>
-            <button type="button" class="chip" data-compress="original" title="Stream copy when possible">Original</button>
-            <button type="button" class="chip" data-compress="custom" title="Target video bitrate">Custom</button>
-          </div>
-          <p class="fold-hint">Higher level = more compression (smaller file). Low = better quality.</p>
-          <div id="custom-bitrate-wrap" class="custom-bitrate hidden">
-            <label class="field-label" for="custom-bitrate">Video bitrate</label>
-            <input id="custom-bitrate" type="text" inputmode="decimal" placeholder="2500k or 2.5" spellcheck="false" />
-            <span class="field-hint">kbps (2500k) or Mbps (2.5)</span>
-          </div>
-        </div>
+      <div class="action-btns">
+        <button type="button" id="btn-open-out" class="btn btn-ghost hidden"><span data-icon="folder-open"></span>Open folder</button>
+        <button type="button" id="btn-cancel" class="btn btn-danger hidden" title="Cancel current (Esc cancels all)">Cancel</button>
+        <button type="button" id="btn-cancel-all" class="btn btn-danger-ghost hidden">Cancel all</button>
+        <button type="button" id="btn-convert" class="btn btn-primary" disabled><span data-icon="bolt"></span><span id="convert-label">Convert</span></button>
       </div>
-
-      <!-- Video: Resolution + FPS (folded by default) -->
-      <div class="fold video-only" id="fold-video" data-section="video">
-        <button type="button" class="fold-header" aria-expanded="false">
-          <span class="fold-chevron">▸</span>
-          <span class="fold-title">Video</span>
-          <span class="fold-summary" id="sum-video">Original · Original fps</span>
-        </button>
-        <div class="fold-body hidden">
-          <div class="option-row nested">
-            <label class="opt-label">Resolution</label>
-            <div class="res-wrap">
-              <div class="chip-row" id="resolution-chips" role="group" aria-label="Resolution">
-                <button type="button" class="chip active" data-resolution="original">Original</button>
-                <button type="button" class="chip" data-resolution="1080p">1080p</button>
-                <button type="button" class="chip" data-resolution="720p">720p</button>
-                <button type="button" class="chip" data-resolution="480p">480p</button>
-                <button type="button" class="chip" data-resolution="custom">Custom</button>
-              </div>
-              <div id="custom-width-wrap" class="custom-width hidden">
-                <input id="custom-width" type="text" inputmode="numeric" placeholder="Width" spellcheck="false" />
-                <span class="field-hint">× auto</span>
-              </div>
-            </div>
-          </div>
-          <div class="option-row nested">
-            <label class="opt-label">FPS</label>
-            <div class="chip-row" id="fps-chips" role="group" aria-label="Frame rate">
-              <button type="button" class="chip active" data-fps="original">Original</button>
-              <button type="button" class="chip" data-fps="60">60</button>
-              <button type="button" class="chip" data-fps="30">30</button>
-              <button type="button" class="chip" data-fps="24">24</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Audio (video mode) / extract bitrate -->
-      <div class="fold" id="fold-audio" data-section="audio">
-        <button type="button" class="fold-header" aria-expanded="false">
-          <span class="fold-chevron">▸</span>
-          <span class="fold-title">Audio</span>
-          <span class="fold-summary" id="sum-audio">Keep</span>
-        </button>
-        <div class="fold-body hidden">
-          <div id="audio-video-opts" class="video-audio-opts">
-            <div class="chip-row" id="audio-chips" role="group" aria-label="Audio">
-              <button type="button" class="chip active" data-audio="keep">Keep</button>
-              <button type="button" class="chip" data-audio="strip">Strip</button>
-              <button type="button" class="chip" data-audio="aac128">AAC 128k</button>
-              <button type="button" class="chip" data-audio="aac96">AAC 96k</button>
-            </div>
-          </div>
-          <div id="audio-bitrate-opts" class="audio-bitrate-opts hidden">
-            <label class="opt-label inline">Bitrate</label>
-            <div class="chip-row" id="audio-bitrate-chips" role="group" aria-label="Audio bitrate">
-              <button type="button" class="chip" data-abitrate="320">320</button>
-              <button type="button" class="chip active" data-abitrate="192">192</button>
-              <button type="button" class="chip" data-abitrate="128">128</button>
-              <button type="button" class="chip" data-abitrate="96">96</button>
-              <button type="button" class="chip" data-abitrate="64">64</button>
-            </div>
-            <span class="field-hint">kbps</span>
-          </div>
-          <p id="audio-lossless-hint" class="fold-hint hidden">Lossless — bitrate not applicable.</p>
-        </div>
-      </div>
-
-      <!-- Trim (folded by default) -->
-      <div class="fold" id="fold-trim" data-section="trim">
-        <button type="button" class="fold-header" aria-expanded="false">
-          <span class="fold-chevron">▸</span>
-          <span class="fold-title">Trim</span>
-          <span class="fold-summary" id="sum-trim">Full length</span>
-        </button>
-        <div class="fold-body hidden">
-          <div class="trim-fields">
-            <div class="field">
-              <span class="field-label">Start</span>
-              <input id="trim-start" type="text" placeholder="0:00" spellcheck="false" />
-            </div>
-            <div class="field">
-              <span class="field-label">End</span>
-              <input id="trim-end" type="text" placeholder="end" spellcheck="false" />
-            </div>
-            <p class="field-hint">hh:mm:ss or seconds</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Output (compact / lightly open) -->
-      <div class="fold" id="fold-output" data-section="output">
-        <button type="button" class="fold-header" aria-expanded="true">
-          <span class="fold-chevron">▾</span>
-          <span class="fold-title">Output</span>
-          <span class="fold-summary" id="sum-output">Same as source</span>
-        </button>
-        <div class="fold-body">
-          <div class="out-fields">
-            <input id="output-dir" type="text" readonly placeholder="Same as source" />
-            <button type="button" id="btn-out-dir" class="ghost-btn">Folder…</button>
-            <button type="button" id="btn-out-clear" class="ghost-btn" title="Same as source">Clear</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="estimate-bar">
-        <span class="estimate-label">Estimated output</span>
-        <span id="est-size" class="estimate-value">Est. —</span>
-      </div>
-    </section>
-
-    <p id="job-summary" class="job-summary">Load a file to convert</p>
-
-    <section class="actions">
-      <button type="button" id="btn-convert" class="primary-btn" disabled>Convert</button>
-      <button type="button" id="btn-cancel" class="danger-btn hidden">Cancel</button>
-      <button type="button" id="btn-open-out" class="ghost-btn hidden">Open folder</button>
-    </section>
-
-    <section class="card progress-card">
-      <div class="progress-head">
-        <span id="progress-status">Ready</span>
-        <span id="progress-pct"></span>
-      </div>
-      <div class="progress-track">
-        <div id="progress-bar" class="progress-bar"></div>
-      </div>
-      <div id="done-banner" class="done-banner hidden">
-        <div class="done-path" id="done-path"></div>
-      </div>
-      <button type="button" id="btn-toggle-log" class="log-toggle">Show log</button>
-      <pre id="log" class="log hidden" aria-live="polite"></pre>
-    </section>
+    </footer>
   </div>
 
-  <div id="settings-backdrop" class="settings-backdrop hidden"></div>
-  <aside id="settings-panel" class="settings-panel hidden" aria-label="Settings">
-    <div class="settings-head">
-      <h2>Settings</h2>
-      <button type="button" id="btn-settings-close" class="icon-btn" title="Close" aria-label="Close">✕</button>
+  <!-- Popovers -->
+  <div class="popover" id="pop-format" role="dialog" aria-label="Format">
+    <div class="pop-label">Video</div>
+    <div class="chip-row" id="format-chips">
+      <button type="button" class="chip" data-format="mp4">MP4</button>
+      <button type="button" class="chip" data-format="mov">MOV</button>
+      <button type="button" class="chip" data-format="mkv">MKV</button>
+      <button type="button" class="chip" data-format="webm">WebM</button>
+      <button type="button" class="chip" data-format="avi">AVI</button>
+      <button type="button" class="chip" data-format="gif">GIF</button>
     </div>
-    <div class="settings-body">
-      <label class="settings-label">Theme</label>
-      <div class="chip-row" id="theme-chips" role="group" aria-label="Theme">
-        <button type="button" class="chip" data-theme="dark">Dark</button>
-        <button type="button" class="chip" data-theme="light">Light</button>
-        <button type="button" class="chip" data-theme="system">System</button>
+    <div class="pop-label">Extract audio</div>
+    <div class="chip-row" id="format-chips-audio">
+      <button type="button" class="chip chip-audio" data-format="mp3">MP3</button>
+      <button type="button" class="chip chip-audio" data-format="m4a">M4A</button>
+      <button type="button" class="chip chip-audio" data-format="wav">WAV</button>
+      <button type="button" class="chip chip-audio" data-format="flac">FLAC</button>
+    </div>
+  </div>
+
+  <div class="popover" id="pop-level" role="dialog" aria-label="Compress level">
+    <div class="pop-label">Compress level</div>
+    <div class="chip-row" id="compress-chips">
+      <button type="button" class="chip" data-compress="low" title="Light compression · best quality">Low</button>
+      <button type="button" class="chip" data-compress="balanced" title="Middle ground">Balanced</button>
+      <button type="button" class="chip" data-compress="high" title="More compression · smaller">High</button>
+      <button type="button" class="chip" data-compress="max" title="Strongest · half resolution">Max</button>
+      <button type="button" class="chip" data-compress="original" title="Copy streams when possible">Original</button>
+      <button type="button" class="chip" data-compress="custom" title="Target bitrate">Custom</button>
+    </div>
+    <div class="level-meter" aria-hidden="true"><span id="level-fill"></span></div>
+    <p class="pop-hint">Higher level = more compression, smaller file. Low keeps the most quality.</p>
+    <div id="custom-bitrate-wrap" class="pop-field hidden">
+      <label for="custom-bitrate">Video bitrate</label>
+      <input id="custom-bitrate" type="text" inputmode="decimal" placeholder="2500k or 2.5" spellcheck="false" />
+      <span class="pop-hint inline">kbps or Mbps</span>
+    </div>
+  </div>
+
+  <div class="popover" id="pop-video" role="dialog" aria-label="Video">
+    <div class="pop-label">Resolution</div>
+    <div class="chip-row" id="resolution-chips">
+      <button type="button" class="chip" data-resolution="original">Original</button>
+      <button type="button" class="chip" data-resolution="1080p">1080p</button>
+      <button type="button" class="chip" data-resolution="720p">720p</button>
+      <button type="button" class="chip" data-resolution="480p">480p</button>
+      <button type="button" class="chip" data-resolution="custom">Custom</button>
+    </div>
+    <div id="custom-width-wrap" class="pop-field hidden">
+      <label for="custom-width">Width</label>
+      <input id="custom-width" type="text" inputmode="numeric" placeholder="e.g. 960" spellcheck="false" />
+      <span class="pop-hint inline">height auto · never upscales</span>
+    </div>
+    <div class="pop-label">Frame rate</div>
+    <div class="chip-row" id="fps-chips">
+      <button type="button" class="chip" data-fps="original">Original</button>
+      <button type="button" class="chip" data-fps="60">60</button>
+      <button type="button" class="chip" data-fps="30">30</button>
+      <button type="button" class="chip" data-fps="24">24</button>
+    </div>
+    <div class="pop-label">Encoder</div>
+    <div class="chip-row" id="hw-chips">
+      <button type="button" class="chip" data-hw="off">Software</button>
+      <button type="button" class="chip" data-hw="auto">Hardware (GPU)</button>
+    </div>
+    <p class="pop-hint" id="hw-hint">Software x264 — best compatibility.</p>
+  </div>
+
+  <div class="popover" id="pop-audio" role="dialog" aria-label="Audio">
+    <div id="audio-video-opts">
+      <div class="pop-label">Audio track</div>
+      <div class="chip-row" id="audio-chips">
+        <button type="button" class="chip" data-audio="keep">Keep</button>
+        <button type="button" class="chip" data-audio="strip">Remove</button>
+        <button type="button" class="chip" data-audio="aac128">128k</button>
+        <button type="button" class="chip" data-audio="aac96">96k</button>
       </div>
-
-      <label class="settings-label">Default output folder</label>
-      <div class="out-fields">
-        <input id="settings-out-dir" type="text" readonly placeholder="Same as source" />
-        <button type="button" id="btn-settings-out" class="ghost-btn">Browse…</button>
-        <button type="button" id="btn-settings-out-clear" class="ghost-btn">Clear</button>
+    </div>
+    <div id="audio-bitrate-opts" class="hidden">
+      <div class="pop-label">Audio quality</div>
+      <div class="chip-row" id="audio-bitrate-chips">
+        <button type="button" class="chip" data-abitrate="320">320</button>
+        <button type="button" class="chip" data-abitrate="192">192</button>
+        <button type="button" class="chip" data-abitrate="128">128</button>
+        <button type="button" class="chip" data-abitrate="96">96</button>
+        <button type="button" class="chip" data-abitrate="64">64</button>
       </div>
+      <p class="pop-hint">kbps — higher sounds better, lower is smaller.</p>
+    </div>
+    <p id="audio-lossless-hint" class="pop-hint hidden">Lossless — no bitrate to choose.</p>
+  </div>
 
-      <label class="settings-label">Default format</label>
-      <select id="settings-format" class="settings-select">
-        <option value="mp4">MP4</option>
-        <option value="mov">MOV</option>
-        <option value="mkv">MKV</option>
-        <option value="webm">WebM</option>
-        <option value="avi">AVI</option>
-        <option value="gif">GIF</option>
-        <option value="mp3">MP3 (extract)</option>
-        <option value="m4a">M4A (extract)</option>
-        <option value="wav">WAV (extract)</option>
-        <option value="flac">FLAC (extract)</option>
-      </select>
+  <div class="popover" id="pop-trim" role="dialog" aria-label="Trim">
+    <div class="pop-label">Trim</div>
+    <div class="trim-grid">
+      <label class="pop-field stack"><span>Start</span><input id="trim-start" type="text" placeholder="0:00" spellcheck="false" /></label>
+      <span class="trim-arrow" data-icon="arrow"></span>
+      <label class="pop-field stack"><span>End</span><input id="trim-end" type="text" placeholder="end" spellcheck="false" /></label>
+    </div>
+    <p class="pop-hint">hh:mm:ss or seconds · applies to every file in the queue.</p>
+    <button type="button" id="btn-trim-reset" class="btn btn-mini btn-quiet">Reset</button>
+  </div>
 
-      <label class="settings-label">Default compress level</label>
-      <select id="settings-compress" class="settings-select">
-        <option value="low">Low (better quality)</option>
-        <option value="balanced">Balanced</option>
-        <option value="high">High (smaller)</option>
-        <option value="max">Max</option>
-        <option value="original">Original</option>
-        <option value="custom">Custom bitrate</option>
-      </select>
+  <div class="popover" id="pop-output" role="dialog" aria-label="Output folder">
+    <div class="pop-label">Save to</div>
+    <div class="chip-row" id="output-chips">
+      <button type="button" class="chip" data-out="same">Same as source</button>
+      <button type="button" class="chip" data-out="custom">Choose folder…</button>
+    </div>
+    <div class="out-path" id="out-path">Each file is saved next to its original.</div>
+    <p class="pop-hint">Never overwrites — existing names get “(1)”, “(2)”…</p>
+    <button type="button" id="btn-out-open" class="btn btn-mini btn-quiet hidden"><span data-icon="folder-open"></span>Open folder</button>
+  </div>
 
-      <label class="settings-label">Default audio bitrate (extract)</label>
-      <select id="settings-audio-bitrate" class="settings-select">
-        <option value="320">320 kbps</option>
-        <option value="192">192 kbps</option>
-        <option value="128">128 kbps</option>
-        <option value="96">96 kbps</option>
-        <option value="64">64 kbps</option>
-      </select>
+  <!-- Drag overlay -->
+  <div id="drag-overlay" class="drag-overlay" aria-hidden="true">
+    <div class="drag-card"><span data-icon="upload"></span><b>Drop to add to queue</b><small>Files or folders · any extension</small></div>
+  </div>
 
-      <label class="settings-check">
-        <input type="checkbox" id="settings-remember" checked />
-        Remember last-used options
-      </label>
+  <!-- Toasts -->
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <!-- Settings -->
+  <div id="settings-backdrop" class="sheet-backdrop"></div>
+  <aside id="settings-panel" class="sheet" aria-label="Settings" role="dialog">
+    <div class="sheet-head">
+      <h2>Settings</h2>
+      <button type="button" id="btn-settings-close" class="icon-btn" title="Close" aria-label="Close" data-icon="close"></button>
+    </div>
+    <div class="sheet-body">
+      <div class="set-group">
+        <div class="set-label">Theme</div>
+        <div class="theme-grid" id="theme-grid">
+          <button type="button" class="theme-card" data-theme="dark"><span class="tc-prev tc-dark"><i></i><i></i></span>Dark</button>
+          <button type="button" class="theme-card" data-theme="light"><span class="tc-prev tc-light"><i></i><i></i></span>Light</button>
+          <button type="button" class="theme-card" data-theme="system"><span class="tc-prev tc-system"><i></i><i></i></span>System</button>
+          <button type="button" class="theme-card" data-theme="midnight"><span class="tc-prev tc-midnight"><i></i><i></i></span>Midnight</button>
+          <button type="button" class="theme-card" data-theme="nord"><span class="tc-prev tc-nord"><i></i><i></i></span>Nord</button>
+          <button type="button" class="theme-card" data-theme="sand"><span class="tc-prev tc-sand"><i></i><i></i></span>Sand</button>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-label">Accent</div>
+        <div class="swatches" id="accent-swatches">
+          <button type="button" class="swatch" data-accent="blue" title="Blue" aria-label="Blue"></button>
+          <button type="button" class="swatch" data-accent="violet" title="Violet" aria-label="Violet"></button>
+          <button type="button" class="swatch" data-accent="teal" title="Teal" aria-label="Teal"></button>
+          <button type="button" class="swatch" data-accent="green" title="Green" aria-label="Green"></button>
+          <button type="button" class="swatch" data-accent="amber" title="Amber" aria-label="Amber"></button>
+          <button type="button" class="swatch" data-accent="rose" title="Rose" aria-label="Rose"></button>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-label">Default output folder</div>
+        <div class="set-row">
+          <div class="set-path" id="settings-out-dir">Same as source</div>
+          <button type="button" id="btn-settings-out" class="btn btn-mini">Browse…</button>
+          <button type="button" id="btn-settings-out-clear" class="btn btn-mini btn-quiet">Clear</button>
+        </div>
+      </div>
+      <div class="set-grid">
+        <label class="set-field"><span>Default format</span>
+          <select id="settings-format">
+            <option value="mp4">MP4</option><option value="mov">MOV</option><option value="mkv">MKV</option>
+            <option value="webm">WebM</option><option value="avi">AVI</option><option value="gif">GIF</option>
+            <option value="mp3">MP3 (extract)</option><option value="m4a">M4A (extract)</option>
+            <option value="wav">WAV (extract)</option><option value="flac">FLAC (extract)</option>
+          </select>
+        </label>
+        <label class="set-field"><span>Default level</span>
+          <select id="settings-compress">
+            <option value="low">Low (best quality)</option><option value="balanced">Balanced</option>
+            <option value="high">High (smaller)</option><option value="max">Max</option>
+            <option value="original">Original</option><option value="custom">Custom bitrate</option>
+          </select>
+        </label>
+        <label class="set-field"><span>Default audio bitrate</span>
+          <select id="settings-audio-bitrate">
+            <option value="320">320 kbps</option><option value="192">192 kbps</option><option value="128">128 kbps</option>
+            <option value="96">96 kbps</option><option value="64">64 kbps</option>
+          </select>
+        </label>
+        <label class="set-field"><span>Files at once</span>
+          <select id="settings-concurrency">
+            <option value="1">1 (recommended)</option><option value="2">2</option>
+          </select>
+        </label>
+      </div>
+      <div class="set-group">
+        <div class="set-label">Hardware encoding</div>
+        <div class="chip-row" id="settings-hw">
+          <button type="button" class="chip" data-hw="off">Off</button>
+          <button type="button" class="chip" data-hw="auto">Auto (GPU, falls back)</button>
+        </div>
+        <p class="pop-hint" id="settings-hw-hint"></p>
+      </div>
+      <div class="set-group checks">
+        <label class="check"><input type="checkbox" id="settings-notify" /><span>Notify when a batch finishes (window in background)</span></label>
+        <label class="check"><input type="checkbox" id="settings-remember" /><span>Remember last-used options</span></label>
+        <label class="check"><input type="checkbox" id="settings-remember-out" /><span>Remember last output folder</span></label>
+      </div>
+      <div class="set-about">FluidConvert <span id="about-version">0.4.0</span> · early build · 100% local, nothing is uploaded.</div>
     </div>
   </aside>
 
+  <script src="icons.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

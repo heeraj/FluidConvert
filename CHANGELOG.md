@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.4.0] — 2026-11-14 — Batch queue, premium UI, any-file input
+
+### Added
+
+- **Batch queue**: drop many files at once, multi-select in Browse, or drop/add a whole folder (non-recursive)
+  - Each item shows detected container · codecs (e.g. `MPEG-TS · H.264 · AAC`), resolution, duration, size and estimated output
+  - Per-item status: Waiting / Converting xx% / Done / Failed / Cancelled, with elapsed time + ETA
+  - Remove item, show-in-folder when done, cancel a single item, Clear finished, Clear queue
+  - Convert All runs sequentially (optional 2 at a time in Settings), Cancel / Cancel all, overall “n of N · %” progress
+  - Total estimated output size for the batch; “Convert again” re-runs a finished batch with new settings
+- **Any-file input**: nothing is filtered by extension — every file is checked with ffprobe
+  - Chrome downloads with no extension work (`videoplayback` → `videoplayback.mp4`)
+  - `.ts`, `.m2ts`, `.mts`, `.m4v`, `.3gp`, `.flv`, `.wmv`, `.ogv`, `.mpg`, `.vob`, `.opus`, `.ogg` and more
+  - Unfinished downloads (`.crdownload`, `.part`) show “Download not finished”; non-media shows “Not a media file”
+  - MPEG-TS sources get `-fflags +genpts`; stream copy to MP4/MOV adds `aac_adtstoasc`
+  - If a stream copy or GPU encode fails, the file is automatically re-encoded in software
+- **Quick presets**: Smaller file · Share 720p · High quality · Extract MP3 · GIF
+- **Compact option bar**: Format / Level / Video / Audio / Trim / Save to pills with animated popovers (click-outside / Esc to close)
+- **Themes**: Dark (refined), Light, System, Midnight (OLED black), Nord, Sand — plus 6 accent colours; titlebar caption buttons follow the theme
+- **Hardware encoding (optional)**: detects NVIDIA NVENC / Intel Quick Sync / AMD AMF with a real test encode; falls back to x264
+- Toast when a batch finishes, Windows notification if the window is in the background, “Open folder” action
+- Keyboard: `Ctrl+O` add files, `Ctrl+Shift+O` add folder, `Enter` convert, `Esc` close popover / cancel batch, `Delete` remove selected, arrow keys move through the queue
+- Remembers last output folder (optional)
+- Headless smoke test: `npm run smoke`
+
+### Changed
+
+- Full visual redesign: Segoe UI Variable typography, 8px spacing scale, layered translucent surfaces, soft shadows, inline SVG icons, gradient primary button, animated progress
+- Removed the stacked accordion list — options now fit in one row; the queue gets the rest of the window (fits at ~900×640 with no scrolling)
+- Output names no longer get a `_converted` suffix: `name.mp4`, and `name (1).mp4` on conflict — never overwrites, never the source file
+- GIF output uses a generated palette (sharper colours, smaller files)
+- WebM encodes faster (`-row-mt`, `-cpu-used 4`); WebM audio is always Opus
+- AVI uses MP3 audio for better player compatibility
+- Installer no longer ships macOS/Linux/32-bit ffprobe binaries
+
+### Fixed
+
+- Drag-and-drop on Electron 33 (uses `webUtils.getPathForFile`; `File.path` no longer exists)
+- Trim with both start and end now produces the right length (`-t` instead of `-to` after input seek)
+- Saved “High” compress level was being reset to “Low” on every launch
+- Closing the app mid-conversion now removes the half-written file
+
 ## [0.3.0] — 2026-09-25 — UI declutter, compress levels, bitrates
 
 ### Added

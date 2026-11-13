@@ -1,15 +1,16 @@
 {
   "name": "fluidconvert",
   "productName": "FluidConvert",
-  "version": "0.3.0",
-  "description": "Compact, minimal Windows video converter - convert, compress, trim, and extract locally.",
+  "version": "0.4.0",
+  "description": "Compact, minimal Windows video converter - batch convert, compress, trim, and extract locally. Accepts any file, even with no extension or .ts.",
   "main": "main.js",
   "author": "GTR / heeraj",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win",
-    "build:dir": "electron-builder --win --dir"
+    "build:dir": "electron-builder --win --dir",
+    "smoke": "node scripts/smoke-test.js"
   },
   "dependencies": {
     "ffmpeg-static": "^5.2.0",
@@ -29,9 +30,13 @@
     "files": [
       "main.js",
       "preload.js",
+      "lib/**/*",
       "renderer/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/ffprobe-static/bin/darwin/**",
+      "!node_modules/ffprobe-static/bin/linux/**",
+      "!node_modules/ffprobe-static/bin/win32/ia32/**"
     ],
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
@@ -41,11 +46,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets/icon.ico"

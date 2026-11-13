@@ -1,18 +1,35 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const F = require('./lib/ffargs');
+const M = require('./lib/media');
 
 let mainWindow = null;
-let currentJob = null; // { proc, cancelled }
+const jobs = new Map(); // jobId -> { proc, cancelled, outputPath }
+const reservedOutputs = new Set();
+let hwCache = null;
+
+const THEMES = {
+  dark: { bg: '#0d0f13', fg: '#eceef2', light: false },
+  light: { bg: '#f3f4f7', fg: '#151821', light: true },
+  midnight: { bg: '#000000', fg: '#f2f2f5', light: false },
+  nord: { bg: '#242933', fg: '#eceff4', light: false },
+  sand: { bg: '#f4eee4', fg: '#2b241b', light: true },
+};
 
 const DEFAULT_SETTINGS = {
   theme: 'dark',
+  accent: 'blue',
   defaultOutputFolder: null,
+  lastOutputFolder: null,
+  rememberOutputFolder: true,
   defaultFormat: 'mp4',
   defaultCompress: 'balanced',
   defaultAudioBitrate: '192',
   rememberLastUsed: true,
+  concurrency: 1,
+  hwEncoding: 'off', // 'off' | 'auto'
+  notifyOnFinish: true,
   lastFormat: null,
   lastCompress: null,
   lastResolution: 'original',
@@ -20,146 +37,96 @@ const DEFAULT_SETTINGS = {
   lastAudio: 'keep',
   lastAudioBitrate: null,
   lastCustomBitrate: '',
-  sectionsOpen: {
-    compress: true,
-    video: false,
-    audio: false,
-    trim: false,
-    output: true,
-  },
+  lastPreset: null,
 };
 
-/** Migrate old compress keys (quality naming) → level naming (higher = more compress). */
-function migrateCompressKey(key) {
-  const map = { high: 'low', small: 'high', tiny: 'max' };
-  if (!key) return key;
-  return map[key] || key;
-}
-
 function migrateSettings(raw) {
-  const s = { ...raw };
-  if (s.defaultCompress) s.defaultCompress = migrateCompressKey(s.defaultCompress);
-  if (s.lastCompress) s.lastCompress = migrateCompressKey(s.lastCompress);
-  if (!s.sectionsOpen || typeof s.sectionsOpen !== 'object') {
-    s.sectionsOpen = { ...DEFAULT_SETTINGS.sectionsOpen };
-  } else {
-    s.sectionsOpen = { ...DEFAULT_SETTINGS.sectionsOpen, ...s.sectionsOpen };
-  }
-  if (!s.defaultAudioBitrate) s.defaultAudioBitrate = '192';
+  const s = { ...DEFAULT_SETTINGS, ...raw };
+  // v0.2 quality names -> v0.3 level names (v0.3 "high" already means more compression)
+  const legacy = { small: 'high', tiny: 'max' };
+  if (legacy[s.defaultCompress]) s.defaultCompress = legacy[s.defaultCompress];
+  if (legacy[s.lastCompress]) s.lastCompress = legacy[s.lastCompress];
+  if (!THEMES[s.theme] && s.theme !== 'system') s.theme = 'dark';
+  s.concurrency = s.concurrency === 2 ? 2 : 1;
+  if (!['off', 'auto'].includes(s.hwEncoding)) s.hwEncoding = 'off';
+  delete s.sectionsOpen;
   return s;
 }
 
-function settingsPath() {
-  return path.join(app.getPath('userData'), 'settings.json');
-}
+function settingsPath() { return path.join(app.getPath('userData'), 'settings.json'); }
 
 function loadSettings() {
   try {
     const p = settingsPath();
     if (!fs.existsSync(p)) return { ...DEFAULT_SETTINGS };
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
-    return migrateSettings({ ...DEFAULT_SETTINGS, ...raw });
+    return migrateSettings(JSON.parse(fs.readFileSync(p, 'utf8')));
   } catch (_) {
     return { ...DEFAULT_SETTINGS };
   }
 }
 
 function saveSettings(partial) {
-  const current = loadSettings();
-  const next = migrateSettings({ ...current, ...partial });
-  if (partial && partial.sectionsOpen) {
-    next.sectionsOpen = {
-      ...DEFAULT_SETTINGS.sectionsOpen,
-      ...(current.sectionsOpen || {}),
-      ...partial.sectionsOpen,
-    };
-  }
-  const p = settingsPath();
+  const next = migrateSettings({ ...loadSettings(), ...(partial || {}) });
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(next, null, 2), 'utf8');
+    fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+    fs.writeFileSync(settingsPath(), JSON.stringify(next, null, 2), 'utf8');
   } catch (_) { /* ignore */ }
   return next;
 }
 
 function resolveTheme(theme) {
-  const t = theme || 'dark';
-  if (t === 'system') {
-    return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
-  }
-  return t === 'light' ? 'light' : 'dark';
+  if (theme === 'system') return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  return THEMES[theme] ? theme : 'dark';
 }
 
-function overlayColors(resolved) {
-  if (resolved === 'light') {
-    return { color: '#f4f5f7', symbolColor: '#1a1d24' };
+function applyTheme(theme) {
+  const resolved = resolveTheme(theme);
+  const t = THEMES[resolved];
+  nativeTheme.themeSource = theme === 'system' ? 'system' : (t.light ? 'light' : 'dark');
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.setTitleBarOverlay({ color: t.bg, symbolColor: t.fg, height: 40 });
+      mainWindow.setBackgroundColor(t.bg);
+    } catch (_) { /* ignore */ }
   }
-  return { color: '#0f1115', symbolColor: '#e8eaed' };
-}
-
-function applyNativeTheme(theme) {
-  const t = theme || 'dark';
-  if (t === 'system') nativeTheme.themeSource = 'system';
-  else if (t === 'light') nativeTheme.themeSource = 'light';
-  else nativeTheme.themeSource = 'dark';
+  return resolved;
 }
 
 function resolveBinary(pkgName) {
   try {
-    let binPath;
-    if (pkgName === 'ffmpeg') {
-      binPath = require('ffmpeg-static');
-    } else {
-      const ffprobe = require('ffprobe-static');
-      binPath = ffprobe.path;
-    }
-    if (binPath && binPath.includes('app.asar')) {
+    let binPath = pkgName === 'ffmpeg' ? require('ffmpeg-static') : require('ffprobe-static').path;
+    if (binPath && binPath.includes('app.asar') && !binPath.includes('app.asar.unpacked')) {
       binPath = binPath.replace('app.asar', 'app.asar.unpacked');
     }
     if (binPath && fs.existsSync(binPath)) return binPath;
   } catch (_) { /* continue */ }
-
   const base = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules')
     : path.join(__dirname, 'node_modules');
-
-  if (pkgName === 'ffmpeg') {
-    const candidates = [
-      path.join(base, 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
-    ];
-    for (const c of candidates) if (fs.existsSync(c)) return c;
-  } else {
-    const plat = process.platform === 'win32' ? 'win32' : process.platform;
-    const arch = process.arch === 'x64' ? 'x64' : process.arch;
-    const candidates = [
-      path.join(base, 'ffprobe-static', 'bin', plat, arch, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'),
-    ];
-    for (const c of candidates) if (fs.existsSync(c)) return c;
-  }
-  return null;
+  const c = pkgName === 'ffmpeg'
+    ? path.join(base, 'ffmpeg-static', 'ffmpeg.exe')
+    : path.join(base, 'ffprobe-static', 'bin', 'win32', 'x64', 'ffprobe.exe');
+  return fs.existsSync(c) ? c : null;
 }
 
 function createWindow() {
   const settings = loadSettings();
-  applyNativeTheme(settings.theme);
   const resolved = resolveTheme(settings.theme);
-  const overlay = overlayColors(resolved);
+  const t = THEMES[resolved];
+  nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (t.light ? 'light' : 'dark');
 
   mainWindow = new BrowserWindow({
-    width: 920,
-    height: 720,
-    minWidth: 800,
-    minHeight: 600,
-    backgroundColor: overlay.color,
+    width: 940,
+    height: 660,
+    minWidth: 720,
+    minHeight: 540,
+    backgroundColor: t.bg,
     title: 'FluidConvert',
-    frame: true,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: overlay.color,
-      symbolColor: overlay.symbolColor,
-      height: 36,
-    },
+    titleBarOverlay: { color: t.bg, symbolColor: t.fg, height: 40 },
     autoHideMenuBar: true,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -167,598 +134,237 @@ function createWindow() {
       sandbox: false,
     },
   });
-
+  mainWindow.once('ready-to-show', () => mainWindow.show());
+  // Dev/QA only: FC_SCREENSHOT=<png path> captures the window after load, then quits.
+  if (process.env.FC_SCREENSHOT) {
+    mainWindow.webContents.on('console-message', (_e, level, message) => { if (level >= 2) console.log(`[renderer] ${message}`); });
+    mainWindow.webContents.setBackgroundThrottling(false);
+    mainWindow.webContents.once('did-finish-load', () => {
+      mainWindow.webContents.insertCSS('*,*::before,*::after{animation:none!important;transition:none!important}');
+      setTimeout(async () => {
+        try {
+          if (process.env.FC_SCREENSHOT_JS) await mainWindow.webContents.executeJavaScript(process.env.FC_SCREENSHOT_JS);
+          await new Promise((r) => setTimeout(r, Number(process.env.FC_SCREENSHOT_WAIT || 400)));
+          const img = await mainWindow.webContents.capturePage();
+          fs.writeFileSync(process.env.FC_SCREENSHOT, img.toPNG());
+        } catch (err) { console.log(`screenshot failed: ${err.message}`); }
+        app.quit();
+      }, 1200);
+    });
+  }
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.setMenuBarVisibility(false);
+  // Never let a stray drop navigate the window away.
+  mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 }
 
-app.whenReady().then(createWindow);
+if (process.platform === 'win32') app.setAppUserModelId('com.heeraj.fluidconvert');
+// QA screenshot runs use a throwaway profile so they never touch real settings.
+if (process.env.FC_SCREENSHOT) app.setPath('userData', path.join(app.getPath('temp'), 'fluidconvert-qa-profile'));
 
+app.whenReady().then(createWindow);
+let quitting = false;
+async function abortAllJobs() {
+  const list = [...jobs.values()];
+  if (!list.length) return;
+  const waits = list.map((job) => new Promise((resolve) => {
+    job.cancelled = true;
+    if (!job.proc || job.proc.exitCode !== null) { resolve(); return; }
+    job.proc.once('close', resolve);
+    M.killProc(job.proc);
+  }));
+  await Promise.race([Promise.all(waits), new Promise((r) => setTimeout(r, 2500))]);
+  // Remove half-written outputs.
+  for (const job of list) {
+    try { if (job.outputPath && fs.existsSync(job.outputPath)) fs.unlinkSync(job.outputPath); } catch (_) { /* ignore */ }
+  }
+}
+app.on('before-quit', (e) => {
+  if (quitting || !jobs.size) return;
+  e.preventDefault();
+  quitting = true;
+  abortAllJobs().finally(() => app.quit());
+});
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
 nativeTheme.on('updated', () => {
   const settings = loadSettings();
   if (settings.theme !== 'system') return;
-  const resolved = resolveTheme('system');
-  const overlay = overlayColors(resolved);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    try {
-      mainWindow.setTitleBarOverlay({
-        color: overlay.color,
-        symbolColor: overlay.symbolColor,
-        height: 36,
-      });
-      mainWindow.setBackgroundColor(overlay.color);
-    } catch (_) { /* ignore */ }
-    send('theme:changed', { resolved });
-  }
+  const resolved = applyTheme('system');
+  send('theme:changed', { resolved, theme: 'system' });
 });
 
 function send(channel, payload) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, payload);
-  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
-function parseTimeToSeconds(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const s = String(value).trim();
-  if (!s) return null;
-  if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s);
-  const parts = s.split(':').map(Number);
-  if (parts.some((n) => Number.isNaN(n))) return null;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return null;
-}
+// ---------- Dialogs / shell ----------
 
-function formatBytes(bytes) {
-  if (!bytes || bytes < 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let i = 0;
-  let n = bytes;
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024;
-    i++;
-  }
-  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-function formatDuration(sec) {
-  if (!sec || sec < 0 || !Number.isFinite(sec)) return '—';
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-const AUDIO_EXTRACT_FORMATS = new Set(['mp3', 'm4a', 'aac', 'wav', 'flac']);
-
-function isAudioExtract(format) {
-  return AUDIO_EXTRACT_FORMATS.has((format || '').toLowerCase());
-}
-
-/** Parse user bitrate like "2500k", "2.5M", "2500", "2.5" (Mbps) → ffmpeg string or null. */
-function parseVideoBitrate(raw) {
-  if (raw === null || raw === undefined) return null;
-  const s = String(raw).trim().toLowerCase().replace(/\s+/g, '');
-  if (!s) return null;
-  const m = /^(\d+(?:\.\d+)?)(k|kbps|m|mbps)?$/.exec(s);
-  if (!m) return null;
-  const num = parseFloat(m[1]);
-  if (!Number.isFinite(num) || num <= 0) return null;
-  const unit = m[2] || '';
-  if (unit === 'm' || unit === 'mbps') {
-    return `${Math.round(num * 1000)}k`;
-  }
-  if (unit === 'k' || unit === 'kbps') {
-    return `${Math.round(num)}k`;
-  }
-  // bare number: if <= 50 treat as Mbps, else as kbps
-  if (num <= 50) return `${Math.round(num * 1000)}k`;
-  return `${Math.round(num)}k`;
-}
-
-function parseAudioBitrateKbps(raw) {
-  const n = parseInt(String(raw || '192').replace(/k$/i, ''), 10);
-  if (![320, 192, 128, 96, 64].includes(n)) return 192;
-  return n;
-}
-
-ipcMain.handle('dialog:openVideo', async () => {
+ipcMain.handle('dialog:openFiles', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select a media file',
-    properties: ['openFile'],
+    title: 'Add media files',
+    properties: ['openFile', 'multiSelections'],
     filters: [
-      { name: 'Media', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'gif', 'm4v', 'wmv', 'flv', 'ts', 'mts', 'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'wma'] },
-      { name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'gif', 'm4v', 'wmv', 'flv', 'ts', 'mts'] },
-      { name: 'Audio', extensions: ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'wma'] },
-      { name: 'All files', extensions: ['*'] },
+      { name: 'All files (*.*)', extensions: ['*'] },
+      { name: 'Media files', extensions: F.MEDIA_EXTS },
+      { name: 'Video', extensions: F.VIDEO_EXTS },
+      { name: 'Audio', extensions: F.AUDIO_EXTS },
     ],
   });
-  if (result.canceled || !result.filePaths.length) return null;
-  return result.filePaths[0];
+  if (result.canceled) return [];
+  return result.filePaths;
+});
+
+ipcMain.handle('dialog:openFolder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: 'Add a folder', properties: ['openDirectory'] });
+  if (result.canceled || !result.filePaths.length) return [];
+  return M.expandPaths(result.filePaths);
 });
 
 ipcMain.handle('dialog:chooseOutputDir', async (_e, defaultPath) => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Choose output folder',
     properties: ['openDirectory', 'createDirectory'],
-    defaultPath: defaultPath || app.getPath('desktop'),
+    defaultPath: defaultPath || app.getPath('videos'),
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
 });
 
-ipcMain.handle('shell:openPath', async (_e, targetPath) => {
-  if (!targetPath) return;
-  await shell.openPath(targetPath);
-});
+ipcMain.handle('fs:expand', (_e, paths) => M.expandPaths(Array.isArray(paths) ? paths : []));
+ipcMain.handle('shell:openPath', async (_e, p) => { if (p) await shell.openPath(p); });
+ipcMain.handle('shell:showItem', async (_e, p) => { if (p) shell.showItemInFolder(p); });
 
-ipcMain.handle('shell:showItem', async (_e, targetPath) => {
-  if (!targetPath) return;
-  shell.showItemInFolder(targetPath);
-});
-
-ipcMain.handle('fs:getDesktop', () => app.getPath('desktop'));
+// ---------- Settings / theme ----------
 
 ipcMain.handle('settings:get', () => loadSettings());
-
 ipcMain.handle('settings:set', (_e, partial) => {
   const next = saveSettings(partial || {});
   if (partial && Object.prototype.hasOwnProperty.call(partial, 'theme')) {
-    applyNativeTheme(next.theme);
-    const resolved = resolveTheme(next.theme);
-    const overlay = overlayColors(resolved);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      try {
-        mainWindow.setTitleBarOverlay({
-          color: overlay.color,
-          symbolColor: overlay.symbolColor,
-          height: 36,
-        });
-        mainWindow.setBackgroundColor(overlay.color);
-      } catch (_) { /* ignore */ }
-    }
+    const resolved = applyTheme(next.theme);
     send('theme:changed', { resolved, theme: next.theme });
   }
   return next;
 });
-
 ipcMain.handle('theme:resolve', () => {
-  const settings = loadSettings();
-  return { theme: settings.theme, resolved: resolveTheme(settings.theme) };
+  const s = loadSettings();
+  return { theme: s.theme, resolved: resolveTheme(s.theme) };
 });
+
+// ---------- Window / notify ----------
+
+ipcMain.handle('app:notify', (_e, { title, body } = {}) => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return false;
+    if (!Notification.isSupported()) return false;
+    const n = new Notification({ title: title || 'FluidConvert', body: body || '', icon: path.join(__dirname, 'assets', 'icon.ico') });
+    n.on('click', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
+    n.show();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.flashFrame(true);
+    return true;
+  } catch (_) { return false; }
+});
+ipcMain.handle('app:version', () => app.getVersion());
+
+// ---------- Probe / HW ----------
 
 ipcMain.handle('media:probe', async (_e, filePath) => {
-  if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error('File not found');
-  }
   const ffprobe = resolveBinary('ffprobe');
-  if (!ffprobe) throw new Error('ffprobe binary not found');
-
-  const stat = fs.statSync(filePath);
-  const args = [
-    '-v', 'quiet',
-    '-print_format', 'json',
-    '-show_format',
-    '-show_streams',
-    filePath,
-  ];
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn(ffprobe, args, { windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-    proc.on('error', reject);
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(stderr || `ffprobe exited with code ${code}`));
-        return;
-      }
-      try {
-        const data = JSON.parse(stdout);
-        const duration = parseFloat(data.format?.duration || 0);
-        const videoStream = (data.streams || []).find((s) => s.codec_type === 'video');
-        const audioStream = (data.streams || []).find((s) => s.codec_type === 'audio');
-        let fps = null;
-        if (videoStream?.r_frame_rate && videoStream.r_frame_rate.includes('/')) {
-          const [a, b] = videoStream.r_frame_rate.split('/').map(Number);
-          if (b) fps = a / b;
-        }
-        resolve({
-          path: filePath,
-          name: path.basename(filePath),
-          size: stat.size,
-          sizeLabel: formatBytes(stat.size),
-          duration,
-          durationLabel: formatDuration(duration),
-          width: videoStream?.width || null,
-          height: videoStream?.height || null,
-          fps,
-          hasVideo: Boolean(videoStream),
-          hasAudio: Boolean(audioStream),
-          format: data.format?.format_name || null,
-        });
-      } catch (err) {
-        reject(err);
-      }
-    });
-  });
+  if (!ffprobe) return { ok: false, reason: 'error', message: 'ffprobe missing', path: filePath, name: path.basename(String(filePath || '')) };
+  return M.probeFile(ffprobe, filePath);
 });
 
-/**
- * Compress level presets — higher level = more compression / smaller file.
- * low ≈ old "high" quality (CRF 18)
- * balanced ≈ CRF 23
- * high ≈ old "small" (CRF 28)
- * max ≈ old "tiny" (CRF 32 + half scale)
- * original = stream copy when possible
- * custom = -b:v from user
- */
-const COMPRESS_PRESETS = {
-  original: { crf: null, copy: true, label: 'Original' },
-  low: { crf: 18, videoBitrate: null, label: 'Low' },
-  balanced: { crf: 23, videoBitrate: null, label: 'Balanced' },
-  high: { crf: 28, videoBitrate: null, label: 'High' },
-  max: { crf: 32, videoBitrate: '800k', scale: 'iw*0.5:ih*0.5', label: 'Max' },
-  custom: { crf: null, videoBitrate: null, label: 'Custom', useCustomBitrate: true },
-};
+ipcMain.handle('hw:detect', async (_e, force) => {
+  if (hwCache && !force) return hwCache;
+  const ffmpeg = resolveBinary('ffmpeg');
+  if (!ffmpeg) return [];
+  try { hwCache = await M.detectHwEncoders(ffmpeg); } catch (_) { hwCache = []; }
+  return hwCache;
+});
 
-const RES_WIDTH = {
-  '1080p': 1920,
-  '720p': 1280,
-  '480p': 854,
-};
+// ---------- Jobs ----------
 
-function resolveTargetWidth(resolution, customWidth, sourceWidth) {
-  const res = (resolution || 'original').toLowerCase();
-  if (res === 'original') return null;
-  let w = null;
-  if (res === 'custom') {
-    const n = parseInt(customWidth, 10);
-    if (Number.isFinite(n) && n > 0) w = n;
-  } else if (RES_WIDTH[res]) {
-    w = RES_WIDTH[res];
-  }
-  if (w == null) return null;
-  if (sourceWidth && Number.isFinite(sourceWidth) && sourceWidth > 0) {
-    w = Math.min(w, sourceWidth);
-  }
-  if (w % 2 !== 0) w -= 1;
-  if (w < 2) return null;
-  return w;
-}
-
-function buildVideoFilters(opts, preset) {
-  const filters = [];
-  const targetW = resolveTargetWidth(opts.resolution, opts.customWidth, opts.sourceWidth);
-  const fpsVal = opts.fps && opts.fps !== 'original' ? parseInt(opts.fps, 10) : null;
-
-  if (opts.format === 'gif') {
-    filters.push(fpsVal ? `fps=${fpsVal}` : 'fps=12');
-    if (targetW) filters.push(`scale=${targetW}:-2:flags=lanczos`);
-    else if (preset.scale) filters.push(`scale=${preset.scale}:flags=lanczos`);
-    else filters.push('scale=480:-2:flags=lanczos');
-    return filters;
-  }
-
-  if (targetW) {
-    filters.push(`scale=${targetW}:-2`);
-  } else if (preset.scale) {
-    filters.push(`scale=${preset.scale}`);
-  }
-
-  if (fpsVal && Number.isFinite(fpsVal) && fpsVal > 0) {
-    filters.push(`fps=${fpsVal}`);
-  }
-
-  return filters;
-}
-
-function applyAudioArgs(args, audioMode, fmt) {
-  const mode = (audioMode || 'keep').toLowerCase();
-  if (mode === 'strip') {
-    args.push('-an');
-    return;
-  }
-  if (mode === 'aac128') {
-    args.push('-c:a', 'aac', '-b:a', '128k');
-    return;
-  }
-  if (mode === 'aac96') {
-    args.push('-c:a', 'aac', '-b:a', '96k');
-    return;
-  }
-  if (fmt === 'webm') {
-    args.push('-c:a', 'libopus', '-b:a', '128k');
-  } else {
-    args.push('-c:a', 'aac', '-b:a', '160k');
-  }
-}
-
-function buildFfmpegArgs(opts) {
-  const {
-    inputPath,
-    outputPath,
-    format,
-    compress,
-    trimStart,
-    trimEnd,
-    duration,
-    customBitrate,
-    audioBitrate,
-  } = opts;
-
-  const level = migrateCompressKey(compress) || 'balanced';
-  const preset = COMPRESS_PRESETS[level] || COMPRESS_PRESETS.balanced;
-  const args = ['-y', '-hide_banner', '-progress', 'pipe:1', '-nostats'];
-  const fmt = (format || 'mp4').toLowerCase();
-
-  const startSec = parseTimeToSeconds(trimStart);
-  const endSec = parseTimeToSeconds(trimEnd);
-
-  if (startSec !== null && startSec > 0) {
-    args.push('-ss', String(startSec));
-  }
-  args.push('-i', inputPath);
-
-  if (endSec !== null && endSec > 0) {
-    args.push('-to', String(endSec));
-  } else if (startSec !== null && startSec > 0 && duration) {
-    // encode to EOF
-  }
-
-  // —— Audio extract ——
-  if (isAudioExtract(fmt)) {
-    args.push('-vn');
-    const aBit = `${parseAudioBitrateKbps(audioBitrate)}k`;
-    if (fmt === 'mp3') {
-      args.push('-c:a', 'libmp3lame', '-b:a', aBit);
-    } else if (fmt === 'm4a' || fmt === 'aac') {
-      args.push('-c:a', 'aac', '-b:a', aBit);
-    } else if (fmt === 'wav') {
-      args.push('-c:a', 'pcm_s16le');
-    } else if (fmt === 'flac') {
-      args.push('-c:a', 'flac');
-    }
-    args.push(outputPath);
-    return args;
-  }
-
-  const vf = buildVideoFilters({ ...opts, format: fmt }, preset);
-  const hasCustomVideo = Boolean(
-    (opts.resolution && opts.resolution !== 'original')
-    || (opts.fps && opts.fps !== 'original')
-    || vf.length
-  );
-  const audioMode = (opts.audio || 'keep').toLowerCase();
-  const canCopy = preset.copy
-    && level === 'original'
-    && ['mp4', 'mov', 'mkv'].includes(fmt)
-    && !hasCustomVideo
-    && (audioMode === 'keep');
-
-  const customBv = level === 'custom' ? parseVideoBitrate(customBitrate) : null;
-  if (level === 'custom' && !customBv) {
-    throw new Error('Custom bitrate required (e.g. 2500k or 2.5)');
-  }
-
-  if (fmt === 'gif') {
-    if (vf.length) args.push('-vf', vf.join(','));
-    args.push('-loop', '0');
-    args.push('-an');
-  } else if (canCopy) {
-    args.push('-c', 'copy');
-  } else {
-    if (fmt === 'webm') {
-      args.push('-c:v', 'libvpx-vp9');
-      if (customBv) {
-        args.push('-b:v', customBv);
-      } else if (preset.crf != null) {
-        args.push('-crf', String(preset.crf), '-b:v', '0');
-      }
-    } else if (fmt === 'avi') {
-      args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p');
-      if (customBv) {
-        args.push('-b:v', customBv);
-      } else {
-        if (preset.crf != null) args.push('-crf', String(preset.crf));
-        if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
-      }
-    } else {
-      args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium');
-      if (customBv) {
-        args.push('-b:v', customBv);
-      } else {
-        if (preset.crf != null) args.push('-crf', String(preset.crf));
-        if (preset.videoBitrate) args.push('-b:v', preset.videoBitrate);
-      }
-      if (fmt === 'mp4' || fmt === 'mov') {
-        args.push('-movflags', '+faststart');
-      }
-    }
-    if (vf.length) args.push('-vf', vf.join(','));
-    applyAudioArgs(args, audioMode, fmt);
-  }
-
-  args.push(outputPath);
-  return args;
-}
-
-ipcMain.handle('job:cancel', async () => {
-  if (currentJob && currentJob.proc) {
-    currentJob.cancelled = true;
-    try {
-      currentJob.proc.kill('SIGTERM');
-    } catch (_) { /* ignore */ }
-    try {
-      if (process.platform === 'win32' && currentJob.proc.pid) {
-        spawn('taskkill', ['/pid', String(currentJob.proc.pid), '/T', '/F'], { windowsHide: true });
-      }
-    } catch (_) { /* ignore */ }
-  }
+ipcMain.handle('job:cancel', async (_e, jobId) => {
+  const targets = jobId ? [jobs.get(jobId)].filter(Boolean) : [...jobs.values()];
+  for (const job of targets) { job.cancelled = true; M.killProc(job.proc); }
   return true;
 });
 
 ipcMain.handle('job:convert', async (_e, options) => {
-  if (currentJob && currentJob.proc) {
-    throw new Error('A conversion is already running');
-  }
-
   const ffmpeg = resolveBinary('ffmpeg');
-  if (!ffmpeg) throw new Error('ffmpeg binary not found');
+  if (!ffmpeg) return { ok: false, error: 'ffmpeg binary not found' };
+  const { jobId, inputPath, outputDir, source } = options || {};
+  if (!inputPath || !fs.existsSync(inputPath)) return { ok: false, error: 'Input file not found' };
 
-  const {
-    inputPath,
-    outputDir,
-    format,
-    compress,
-    trimStart,
-    trimEnd,
-    duration,
-    resolution,
-    customWidth,
-    fps,
-    audio,
-    sourceWidth,
-    customBitrate,
-    audioBitrate,
-  } = options;
-
-  if (!inputPath || !fs.existsSync(inputPath)) {
-    throw new Error('Input file not found');
-  }
+  const invalid = F.validateJob(options, source);
+  if (invalid) return { ok: false, error: invalid };
 
   const outDir = outputDir || path.dirname(inputPath);
-  if (!fs.existsSync(outDir)) {
-    fs.mkdirSync(outDir, { recursive: true });
+  try { fs.mkdirSync(outDir, { recursive: true }); } catch (err) { return { ok: false, error: `Cannot write to ${outDir}` }; }
+
+  const ext = F.outputExt(options.format);
+  const outputPath = F.uniqueOutputPath(outDir, F.outputBaseName(inputPath), ext, reservedOutputs, inputPath);
+  reservedOutputs.add(outputPath.toLowerCase());
+
+  let hwEncoder = null;
+  if (options.hwEncoding === 'auto' && ['mp4', 'mov', 'mkv', 'avi'].includes(ext)) {
+    const list = hwCache || [];
+    hwEncoder = list[0] || null;
   }
+  const totalDuration = F.effectiveDuration(source && source.duration, options.trimStart, options.trimEnd);
+  const job = { proc: null, cancelled: false, outputPath };
+  jobs.set(jobId, job);
 
-  const baseName = path.basename(inputPath, path.extname(inputPath));
-  let ext = (format || 'mp4').toLowerCase();
-  if (ext === 'aac') ext = 'm4a';
-  const suffix = isAudioExtract(ext) ? 'audio' : 'converted';
-  let outputPath = path.join(outDir, `${baseName}_${suffix}.${ext}`);
-  let n = 1;
-  while (fs.existsSync(outputPath)) {
-    outputPath = path.join(outDir, `${baseName}_${suffix}_${n}.${ext}`);
-    n += 1;
+  const attempt = async (overrides) => {
+    const built = F.buildFfmpegArgs({
+      ...options,
+      format: ext,
+      inputPath,
+      outputPath,
+      sourceWidth: source && source.width,
+      source,
+      hwEncoder,
+      ...overrides,
+    });
+    send('job:log', { jobId, line: `ffmpeg ${built.args.join(' ')}` });
+    const run = M.runFfmpeg(ffmpeg, built.args, {
+      totalDuration,
+      onProgress: (p) => send('job:progress', { jobId, ...p }),
+      onLog: (line) => send('job:log', { jobId, line }),
+    });
+    job.proc = run.proc;
+    const res = await run.done;
+    return { ...res, built };
+  };
+
+  try {
+    let res = await attempt({});
+    if (!job.cancelled && res.code !== 0 && (res.built.usedCopy || res.built.usedHw)) {
+      send('job:log', { jobId, line: res.built.usedCopy ? 'Stream copy failed — re-encoding' : 'Hardware encoder failed — using software (x264)' });
+      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+      send('job:progress', { jobId, percent: 0, outSec: 0, elapsedSec: 0, etaSec: null, retry: true });
+      res = await attempt({ forceEncode: true, hwEncoder: null });
+    }
+    if (job.cancelled) {
+      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+      return { ok: false, cancelled: true };
+    }
+    if (res.code !== 0) {
+      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+      const lines = String(res.stderr || '').trim().split(/\r?\n/).filter(Boolean);
+      return { ok: false, error: lines.slice(-2).join(' ').slice(0, 300) || `ffmpeg exited with code ${res.code}` };
+    }
+    let size = 0;
+    try { size = fs.statSync(outputPath).size; } catch (_) {}
+    return { ok: true, outputPath, outputDir: outDir, size, sizeLabel: F.formatBytes(size) };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  } finally {
+    jobs.delete(jobId);
+    reservedOutputs.delete(outputPath.toLowerCase());
   }
-
-  const args = buildFfmpegArgs({
-    inputPath,
-    outputPath,
-    format: ext,
-    compress: compress || 'balanced',
-    trimStart,
-    trimEnd,
-    duration,
-    resolution: resolution || 'original',
-    customWidth,
-    fps: fps || 'original',
-    audio: audio || 'keep',
-    sourceWidth: sourceWidth || null,
-    customBitrate: customBitrate || '',
-    audioBitrate: audioBitrate || '192',
-  });
-
-  const startSec = parseTimeToSeconds(trimStart) || 0;
-  const endSec = parseTimeToSeconds(trimEnd);
-  const totalDuration = endSec != null && endSec > startSec
-    ? endSec - startSec
-    : Math.max(0, (duration || 0) - startSec);
-
-  return new Promise((resolve, reject) => {
-    send('job:log', { line: `ffmpeg ${args.join(' ')}` });
-    send('job:progress', { percent: 0, indeterminate: true, status: 'Starting…' });
-
-    const proc = spawn(ffmpeg, args, { windowsHide: true });
-    currentJob = { proc, cancelled: false };
-
-    let stderrBuf = '';
-
-    const onProgressLine = (line) => {
-      const m = /out_time_ms=(\d+)/.exec(line);
-      if (m && totalDuration > 0) {
-        const outSec = parseInt(m[1], 10) / 1e6;
-        const percent = Math.min(99, Math.max(0, (outSec / totalDuration) * 100));
-        send('job:progress', {
-          percent,
-          indeterminate: false,
-          status: `Encoding… ${percent.toFixed(0)}%`,
-        });
-      }
-      const t = /out_time=(\d+:\d+:\d+\.\d+)/.exec(line);
-      if (t && totalDuration > 0) {
-        const parts = t[1].split(':').map(Number);
-        const outSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
-        const percent = Math.min(99, Math.max(0, (outSec / totalDuration) * 100));
-        send('job:progress', {
-          percent,
-          indeterminate: false,
-          status: `Encoding… ${percent.toFixed(0)}%`,
-        });
-      }
-    };
-
-    proc.stdout.on('data', (d) => {
-      const text = d.toString();
-      text.split(/\r?\n/).forEach((line) => {
-        if (line.trim()) onProgressLine(line.trim());
-      });
-    });
-
-    proc.stderr.on('data', (d) => {
-      const text = d.toString();
-      stderrBuf += text;
-      text.split(/\r?\n/).forEach((line) => {
-        const trimmed = line.trim();
-        if (trimmed && /time=|frame=|error|Error/i.test(trimmed)) {
-          send('job:log', { line: trimmed });
-        }
-      });
-    });
-
-    proc.on('error', (err) => {
-      currentJob = null;
-      send('job:progress', { percent: 0, indeterminate: false, status: 'Failed' });
-      reject(err);
-    });
-
-    proc.on('close', (code) => {
-      const wasCancelled = currentJob?.cancelled;
-      currentJob = null;
-      if (wasCancelled) {
-        send('job:progress', { percent: 0, indeterminate: false, status: 'Cancelled' });
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
-        resolve({ cancelled: true, outputPath: null });
-        return;
-      }
-      if (code !== 0) {
-        send('job:progress', { percent: 0, indeterminate: false, status: 'Failed' });
-        reject(new Error(stderrBuf.slice(-800) || `ffmpeg exited with code ${code}`));
-        return;
-      }
-      send('job:progress', { percent: 100, indeterminate: false, status: 'Done' });
-      let outSize = 0;
-      try { outSize = fs.statSync(outputPath).size; } catch (_) {}
-      resolve({
-        cancelled: false,
-        outputPath,
-        outputDir: outDir,
-        size: outSize,
-        sizeLabel: formatBytes(outSize),
-      });
-    });
-  });
 });

@@ -13,7 +13,13 @@ FluidConvert processes video **entirely on your computer**.
 
 - Your source files stay where you chose them
 - Output files are written only to the folder you select (or the source folder / Desktop default)
-- Temporary/partial outputs from a cancelled job are removed when possible
+- Temporary/partial outputs from a cancelled job (or from closing the app mid-conversion) are removed when possible
+- Settings (theme, last options, last output folder) are stored in a local `settings.json` in your Windows user profile
+
+## Notifications and hardware check
+
+- Batch-finished notifications are local Windows notifications; nothing is sent anywhere
+- Optional GPU encoding runs a tiny local test encode to see which encoders work; no data leaves your PC
 
 ## Third-party binaries
 

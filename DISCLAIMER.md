@@ -1,6 +1,6 @@
 # Disclaimer — FluidConvert
 
-FluidConvert **v0.1.0** is an **early / unstable** build provided as-is for evaluation.
+FluidConvert (currently **v0.4.0**) is an **early** build provided as-is for evaluation.
 
 ## No warranty
 
